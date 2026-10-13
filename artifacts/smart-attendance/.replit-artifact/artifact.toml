@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Điểm danh thông minh"
+description = "Ứng dụng web cho trường học để giáo viên quản lý lớp, mở phiên điểm danh bằng QR động và đối chiếu số lượt điểm danh với sĩ số ước lượng bằng AI từ camera, không nhận diện khuôn mặt."
+version = "1.0.0"
+id = "artifacts/smart-attendance"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23247
+
+[services.development]
+run = "pnpm --filter @workspace/smart-attendance run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/smart-attendance", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/smart-attendance/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23247"
+BASE_PATH = "/"

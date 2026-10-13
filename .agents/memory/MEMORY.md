@@ -1,0 +1,1 @@
+- [Camera attendance privacy](camera-attendance-privacy.md) — classroom cameras estimate headcount only; never identify students or use face recognition.

@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: attendance
+    description: Class and attendance operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,276 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /attendance/overview:
+    get:
+      operationId: getAttendanceOverview
+      tags: [attendance]
+      summary: Get dashboard overview
+      responses:
+        "200":
+          description: Dashboard overview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceOverview"
+  /classes:
+    get:
+      operationId: listClasses
+      tags: [attendance]
+      summary: List classes
+      responses:
+        "200":
+          description: Classes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Classroom"
+    post:
+      operationId: createClass
+      tags: [attendance]
+      summary: Create a class
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClassInput"
+      responses:
+        "201":
+          description: Created class
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Classroom"
+  /classes/{classId}/students:
+    parameters:
+      - name: classId
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      operationId: listClassStudents
+      tags: [attendance]
+      summary: List students in a class
+      responses:
+        "200":
+          description: Students
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Student"
+  /sessions:
+    get:
+      operationId: listAttendanceSessions
+      tags: [attendance]
+      summary: List attendance sessions
+      parameters:
+        - name: classId
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Attendance sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttendanceSession"
+    post:
+      operationId: createAttendanceSession
+      tags: [attendance]
+      summary: Start an attendance session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttendanceSessionInput"
+      responses:
+        "201":
+          description: Started attendance session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceSession"
+  /sessions/{sessionId}:
+    parameters:
+      - name: sessionId
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      operationId: getAttendanceSession
+      tags: [attendance]
+      summary: Get session details
+      responses:
+        "200":
+          description: Attendance session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceSession"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /sessions/{sessionId}/close:
+    parameters:
+      - name: sessionId
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      operationId: closeAttendanceSession
+      tags: [attendance]
+      summary: Close an attendance session
+      responses:
+        "200":
+          description: Closed session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceSession"
+  /sessions/{sessionId}/check-ins:
+    parameters:
+      - name: sessionId
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      operationId: listSessionCheckIns
+      tags: [attendance]
+      summary: List check-ins for a session
+      responses:
+        "200":
+          description: Check-in records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttendanceRecord"
+    post:
+      operationId: createSessionCheckIn
+      tags: [attendance]
+      summary: Record student attendance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckInInput"
+      responses:
+        "201":
+          description: Recorded attendance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceRecord"
+        "400":
+          description: Invalid token or session is closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /attendance/{recordId}:
+    parameters:
+      - name: recordId
+        in: path
+        required: true
+        schema:
+          type: integer
+    patch:
+      operationId: updateAttendanceRecord
+      tags: [attendance]
+      summary: Correct an attendance record
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttendanceUpdate"
+      responses:
+        "200":
+          description: Updated attendance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceRecord"
+  /sessions/{sessionId}/counts:
+    parameters:
+      - name: sessionId
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      operationId: createCountSnapshot
+      tags: [attendance]
+      summary: Save an aggregate camera count
+      description: Stores only aggregate counts and confidence, never a frame or identity.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CountSnapshotInput"
+      responses:
+        "201":
+          description: Count snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CountSnapshot"
+  /sessions/{sessionId}/reconciliation:
+    parameters:
+      - name: sessionId
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      operationId: getSessionReconciliation
+      tags: [attendance]
+      summary: Compare QR attendance with the latest aggregate count
+      responses:
+        "200":
+          description: Reconciliation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reconciliation"
+  /reports/attendance:
+    get:
+      operationId: getAttendanceReport
+      tags: [attendance]
+      summary: Get attendance summary
+      parameters:
+        - name: classId
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Attendance report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceReport"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +305,246 @@ components:
           type: string
       required:
         - status
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+    Classroom:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        subject:
+          type: string
+        room:
+          type: string
+        studentCount:
+          type: integer
+      required: [id, name, subject, room, studentCount]
+    ClassInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+        subject:
+          type: string
+          minLength: 1
+        room:
+          type: string
+          minLength: 1
+      required: [name, subject, room]
+    Student:
+      type: object
+      properties:
+        id:
+          type: integer
+        classId:
+          type: integer
+        fullName:
+          type: string
+        studentCode:
+          type: string
+        attendanceRate:
+          type: number
+      required: [id, classId, fullName, studentCode, attendanceRate]
+    AttendanceSession:
+      type: object
+      properties:
+        id:
+          type: integer
+        classId:
+          type: integer
+        className:
+          type: string
+        subject:
+          type: string
+        status:
+          type: string
+          enum: [active, closed]
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: [string, "null"]
+          format: date-time
+        qrToken:
+          type: string
+        qrExpiresAt:
+          type: string
+          format: date-time
+        studentCount:
+          type: integer
+        checkedInCount:
+          type: integer
+      required: [id, classId, className, subject, status, startedAt, endedAt, qrToken, qrExpiresAt, studentCount, checkedInCount]
+    AttendanceSessionInput:
+      type: object
+      properties:
+        classId:
+          type: integer
+      required: [classId]
+    CheckInInput:
+      type: object
+      properties:
+        studentCode:
+          type: string
+          minLength: 1
+        qrToken:
+          type: string
+          minLength: 1
+      required: [studentCode, qrToken]
+    AttendanceRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        sessionId:
+          type: integer
+        studentId:
+          type: integer
+        studentName:
+          type: string
+        studentCode:
+          type: string
+        status:
+          type: string
+          enum: [present, late, absent]
+        checkedInAt:
+          type: [string, "null"]
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, sessionId, studentId, studentName, studentCode, status, checkedInAt, updatedAt]
+    AttendanceUpdate:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [present, late, absent]
+        note:
+          type: string
+      required: [status]
+    CountSnapshotInput:
+      type: object
+      properties:
+        estimatedCount:
+          type: integer
+          minimum: 0
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        source:
+          type: string
+          enum: [camera, demo]
+      required: [estimatedCount, confidence, source]
+    CountSnapshot:
+      type: object
+      properties:
+        id:
+          type: integer
+        sessionId:
+          type: integer
+        estimatedCount:
+          type: integer
+        confidence:
+          type: number
+        source:
+          type: string
+          enum: [camera, demo]
+        capturedAt:
+          type: string
+          format: date-time
+      required: [id, sessionId, estimatedCount, confidence, source, capturedAt]
+    Reconciliation:
+      type: object
+      properties:
+        sessionId:
+          type: integer
+        checkedInCount:
+          type: integer
+        estimatedCount:
+          type: [integer, "null"]
+        difference:
+          type: [integer, "null"]
+        confidence:
+          type: [number, "null"]
+        source:
+          type: [string, "null"]
+          enum: [camera, demo, null]
+        capturedAt:
+          type: [string, "null"]
+          format: date-time
+        needsReview:
+          type: boolean
+        message:
+          type: string
+      required: [sessionId, checkedInCount, estimatedCount, difference, confidence, source, capturedAt, needsReview, message]
+    OverviewActivity:
+      type: object
+      properties:
+        id:
+          type: integer
+        message:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, message, createdAt]
+    AttendanceOverview:
+      type: object
+      properties:
+        classCount:
+          type: integer
+        studentCount:
+          type: integer
+        sessionsToday:
+          type: integer
+        averageAttendanceRate:
+          type: number
+        activeSession:
+          anyOf:
+            - $ref: "#/components/schemas/AttendanceSession"
+            - type: "null"
+        recentSessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/AttendanceSession"
+        activities:
+          type: array
+          items:
+            $ref: "#/components/schemas/OverviewActivity"
+      required: [classCount, studentCount, sessionsToday, averageAttendanceRate, activeSession, recentSessions, activities]
+    AttendanceReportRow:
+      type: object
+      properties:
+        classId:
+          type: integer
+        className:
+          type: string
+        studentCount:
+          type: integer
+        attendanceRate:
+          type: number
+        sessionsCount:
+          type: integer
+      required: [classId, className, studentCount, attendanceRate, sessionsCount]
+    AttendanceReport:
+      type: object
+      properties:
+        overallAttendanceRate:
+          type: number
+        totalSessions:
+          type: integer
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/AttendanceReportRow"
+      required: [overallAttendanceRate, totalSessions, rows]
 
