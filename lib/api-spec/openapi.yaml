@@ -12,6 +12,8 @@ tags:
     description: Health operations
   - name: attendance
     description: Class and attendance operations
+  - name: authentication
+    description: Signed-in accounts, roles, and QR check-in
 paths:
   /healthz:
     get:
@@ -26,6 +28,110 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /auth/me:
+    get:
+      operationId: getCurrentSchoolUser
+      tags: [authentication]
+      summary: Get the signed-in school account and role
+      responses:
+        "200":
+          description: Current account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchoolUser"
+  /admin/users:
+    get:
+      operationId: listSchoolUsers
+      tags: [authentication]
+      summary: List accounts for role assignment
+      responses:
+        "200":
+          description: School accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SchoolUser"
+  /admin/users/{userId}:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: integer
+    patch:
+      operationId: updateSchoolUser
+      tags: [authentication]
+      summary: Assign an account role and school records
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchoolUserUpdateInput"
+      responses:
+        "200":
+          description: Updated account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchoolUser"
+  /qr/{token}:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getQrCheckInSession
+      tags: [authentication]
+      summary: Validate a QR for a signed-in student
+      responses:
+        "200":
+          description: Session details without other student data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckInSessionInfo"
+        "404":
+          description: QR is invalid, expired, or closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /qr/{token}/check-in:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: createQrStudentCheckIn
+      tags: [authentication]
+      summary: Check in the signed-in student automatically
+      responses:
+        "201":
+          description: Attendance recorded for the student
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceRecord"
+        "409":
+          description: Student has already checked in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceRecord"
+        "400":
+          description: Student account is not linked to a class roster entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /attendance/overview:
     get:
       operationId: getAttendanceOverview
@@ -89,6 +195,23 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Student"
+    post:
+      operationId: createClassStudent
+      tags: [attendance]
+      summary: Add a student to a class roster
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StudentInput"
+      responses:
+        "201":
+          description: Student added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Student"
   /sessions:
     get:
       operationId: listAttendanceSessions
@@ -305,6 +428,58 @@ components:
           type: string
       required:
         - status
+    SchoolUser:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+        displayName:
+          type: string
+        role:
+          type: string
+          enum: [admin, teacher, student, pending]
+        studentId:
+          type: [integer, "null"]
+        studentCode:
+          type: [string, "null"]
+        studentName:
+          type: [string, "null"]
+        classIds:
+          type: array
+          items:
+            type: integer
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, email, displayName, role, studentId, studentCode, studentName, classIds, createdAt]
+    SchoolUserUpdateInput:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [admin, teacher, student, pending]
+        studentId:
+          type: [integer, "null"]
+        classIds:
+          type: array
+          items:
+            type: integer
+      required: [role, studentId, classIds]
+    CheckInSessionInfo:
+      type: object
+      properties:
+        sessionId:
+          type: integer
+        className:
+          type: string
+        subject:
+          type: string
+        qrExpiresAt:
+          type: string
+          format: date-time
+      required: [sessionId, className, subject, qrExpiresAt]
     ApiError:
       type: object
       properties:
@@ -352,6 +527,16 @@ components:
         attendanceRate:
           type: number
       required: [id, classId, fullName, studentCode, attendanceRate]
+    StudentInput:
+      type: object
+      properties:
+        fullName:
+          type: string
+          minLength: 1
+        studentCode:
+          type: string
+          minLength: 1
+      required: [fullName, studentCode]
     AttendanceSession:
       type: object
       properties:

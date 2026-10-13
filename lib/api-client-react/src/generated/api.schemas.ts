@@ -9,6 +9,55 @@ export interface HealthStatus {
   status: string;
 }
 
+export type SchoolUserRole = typeof SchoolUserRole[keyof typeof SchoolUserRole];
+
+
+export const SchoolUserRole = {
+  admin: 'admin',
+  teacher: 'teacher',
+  student: 'student',
+  pending: 'pending',
+} as const;
+
+export interface SchoolUser {
+  id: number;
+  email: string;
+  displayName: string;
+  role: SchoolUserRole;
+  /** @nullable */
+  studentId: number | null;
+  /** @nullable */
+  studentCode: string | null;
+  /** @nullable */
+  studentName: string | null;
+  classIds: number[];
+  createdAt: string;
+}
+
+export type SchoolUserUpdateInputRole = typeof SchoolUserUpdateInputRole[keyof typeof SchoolUserUpdateInputRole];
+
+
+export const SchoolUserUpdateInputRole = {
+  admin: 'admin',
+  teacher: 'teacher',
+  student: 'student',
+  pending: 'pending',
+} as const;
+
+export interface SchoolUserUpdateInput {
+  role: SchoolUserUpdateInputRole;
+  /** @nullable */
+  studentId: number | null;
+  classIds: number[];
+}
+
+export interface CheckInSessionInfo {
+  sessionId: number;
+  className: string;
+  subject: string;
+  qrExpiresAt: string;
+}
+
 export interface ApiError {
   error: string;
 }
@@ -36,6 +85,13 @@ export interface Student {
   fullName: string;
   studentCode: string;
   attendanceRate: number;
+}
+
+export interface StudentInput {
+  /** @minLength 1 */
+  fullName: string;
+  /** @minLength 1 */
+  studentCode: string;
 }
 
 export type AttendanceSessionStatus = typeof AttendanceSessionStatus[keyof typeof AttendanceSessionStatus];

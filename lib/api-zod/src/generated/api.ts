@@ -18,6 +18,99 @@ export const HealthCheckResponse = zod.object({
 
 
 /**
+ * @summary Get the signed-in school account and role
+ */
+export const GetCurrentSchoolUserResponse = zod.object({
+  "id": zod.number().int(),
+  "email": zod.string(),
+  "displayName": zod.string(),
+  "role": zod.enum(['admin', 'teacher', 'student', 'pending']),
+  "studentId": zod.number().int().nullable(),
+  "studentCode": zod.string().nullable(),
+  "studentName": zod.string().nullable(),
+  "classIds": zod.array(zod.number().int()),
+  "createdAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary List accounts for role assignment
+ */
+export const ListSchoolUsersResponseItem = zod.object({
+  "id": zod.number().int(),
+  "email": zod.string(),
+  "displayName": zod.string(),
+  "role": zod.enum(['admin', 'teacher', 'student', 'pending']),
+  "studentId": zod.number().int().nullable(),
+  "studentCode": zod.string().nullable(),
+  "studentName": zod.string().nullable(),
+  "classIds": zod.array(zod.number().int()),
+  "createdAt": zod.coerce.date()
+})
+export const ListSchoolUsersResponse = zod.array(ListSchoolUsersResponseItem)
+
+
+/**
+ * @summary Assign an account role and school records
+ */
+export const UpdateSchoolUserParams = zod.object({
+  "userId": zod.coerce.number().int()
+})
+
+export const UpdateSchoolUserBody = zod.object({
+  "role": zod.enum(['admin', 'teacher', 'student', 'pending']),
+  "studentId": zod.number().int().nullable(),
+  "classIds": zod.array(zod.number().int())
+})
+
+export const UpdateSchoolUserResponse = zod.object({
+  "id": zod.number().int(),
+  "email": zod.string(),
+  "displayName": zod.string(),
+  "role": zod.enum(['admin', 'teacher', 'student', 'pending']),
+  "studentId": zod.number().int().nullable(),
+  "studentCode": zod.string().nullable(),
+  "studentName": zod.string().nullable(),
+  "classIds": zod.array(zod.number().int()),
+  "createdAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Validate a QR for a signed-in student
+ */
+export const GetQrCheckInSessionParams = zod.object({
+  "token": zod.coerce.string()
+})
+
+export const GetQrCheckInSessionResponse = zod.object({
+  "sessionId": zod.number().int(),
+  "className": zod.string(),
+  "subject": zod.string(),
+  "qrExpiresAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Check in the signed-in student automatically
+ */
+export const CreateQrStudentCheckInParams = zod.object({
+  "token": zod.coerce.string()
+})
+
+export const CreateQrStudentCheckInResponse = zod.object({
+  "id": zod.number().int(),
+  "sessionId": zod.number().int(),
+  "studentId": zod.number().int(),
+  "studentName": zod.string(),
+  "studentCode": zod.string(),
+  "status": zod.enum(['present', 'late', 'absent']),
+  "checkedInAt": zod.coerce.date().nullable(),
+  "updatedAt": zod.coerce.date()
+})
+
+
+/**
  * @summary Get dashboard overview
  */
 export const GetAttendanceOverviewResponse = zod.object({
@@ -110,6 +203,31 @@ export const ListClassStudentsResponseItem = zod.object({
   "attendanceRate": zod.number()
 })
 export const ListClassStudentsResponse = zod.array(ListClassStudentsResponseItem)
+
+
+/**
+ * @summary Add a student to a class roster
+ */
+export const CreateClassStudentParams = zod.object({
+  "classId": zod.coerce.number().int()
+})
+
+
+
+
+
+export const CreateClassStudentBody = zod.object({
+  "fullName": zod.string().min(1),
+  "studentCode": zod.string().min(1)
+})
+
+export const CreateClassStudentResponse = zod.object({
+  "id": zod.number().int(),
+  "classId": zod.number().int(),
+  "fullName": zod.string(),
+  "studentCode": zod.string(),
+  "attendanceRate": zod.number()
+})
 
 
 /**

@@ -21,4 +21,6 @@ export * from "./attendance-records";
 export * from "./attendance-sessions";
 export * from "./classrooms";
 export * from "./count-snapshots";
+export * from "./school-users";
 export * from "./students";
+export * from "./teacher-class-assignments";
