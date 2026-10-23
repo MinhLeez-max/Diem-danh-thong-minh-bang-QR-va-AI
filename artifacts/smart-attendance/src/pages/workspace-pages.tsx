@@ -1,14 +1,21 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useLocation, useRoute } from 'wouter';
 import { useQueryClient } from '@tanstack/react-query';
+import { useAuth } from '@clerk/react';
 import QRCode from 'qrcode';
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
 import {
+  getGetCurrentSchoolUserQueryKey,
   useGetAttendanceOverview,
   getGetAttendanceOverviewQueryKey,
+  getGetQrCheckInSessionQueryKey,
   useListClasses,
   getListClassesQueryKey,
   useCreateClass,
+  useCreateClassStudent,
+  useGetCurrentSchoolUser,
+  useGetQrCheckInSession,
+  useCreateQrStudentCheckIn,
   useListClassStudents,
   getListClassStudentsQueryKey,
   useListAttendanceSessions,
@@ -39,7 +46,17 @@ const dateTime = (value?: string | null) => value
   ? new Intl.DateTimeFormat('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }).format(new Date(value))
   : 'Chưa ghi nhận';
 
-const errorText = (error: unknown) => error instanceof Error ? error.message : 'Đã có lỗi xảy ra. Vui lòng thử lại.';
+const errorText = (error: unknown) => {
+  if (error && typeof error === 'object' && 'data' in error) {
+    const data = (error as { data?: unknown }).data;
+    if (data && typeof data === 'object' && 'error' in data && typeof data.error === 'string') {
+      return data.error;
+    }
+  }
+  return error instanceof Error ? error.message : 'Đã có lỗi xảy ra. Vui lòng thử lại.';
+};
+const appBasePath = import.meta.env.BASE_URL.replace(/\/$/, '');
+const checkInHref = (token: string) => `${appBasePath}/check-in?token=${encodeURIComponent(token)}`;
 
 function PageHeading({ eyebrow, title, subtitle, action }: { eyebrow: string; title: string; subtitle: string; action?: ReactNode }) {
   return (
@@ -198,13 +215,18 @@ export function DashboardPage() {
 export function ClassesPage() {
   const qc = useQueryClient();
   const classes = useListClasses();
+  const currentUser = useGetCurrentSchoolUser();
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [search, setSearch] = useState('');
   const [modal, setModal] = useState(false);
+  const [studentModal, setStudentModal] = useState(false);
   const [form, setForm] = useState({ name: '', subject: '', room: '' });
+  const [studentForm, setStudentForm] = useState({ fullName: '', studentCode: '' });
   const [formError, setFormError] = useState('');
+  const [studentError, setStudentError] = useState('');
   const students = useListClassStudents(selectedId ?? 0, { query: { enabled: selectedId !== null, queryKey: getListClassStudentsQueryKey(selectedId ?? 0) } });
   const createClass = useCreateClass();
+  const createStudent = useCreateClassStudent();
   const createSession = useCreateAttendanceSession();
   const [, setLocation] = useLocation();
   const items = classes.data ?? [];
@@ -223,6 +245,21 @@ export function ClassesPage() {
       onError: (error) => setFormError(errorText(error)),
     });
   };
+  const submitStudent = (event: FormEvent) => {
+    event.preventDefault();
+    if (selectedId === null) return;
+    setStudentError('');
+    createStudent.mutate({ classId: selectedId, data: studentForm }, {
+      onSuccess: () => {
+        void qc.invalidateQueries({ queryKey: getListClassStudentsQueryKey(selectedId) });
+        void qc.invalidateQueries({ queryKey: getListClassesQueryKey() });
+        void qc.invalidateQueries({ queryKey: getGetAttendanceOverviewQueryKey() });
+        setStudentForm({ fullName: '', studentCode: '' });
+        setStudentModal(false);
+      },
+      onError: (error) => setStudentError(errorText(error)),
+    });
+  };
   const startSession = (classroom: Classroom) => {
     createSession.mutate({ data: { classId: classroom.id } }, {
       onSuccess: (session) => {
@@ -234,7 +271,7 @@ export function ClassesPage() {
   };
   return (
     <main className="page-wrap">
-      <PageHeading eyebrow="Danh mục giảng dạy" title="Lớp học của bạn" subtitle="Chọn lớp để xem sĩ số hoặc mở một buổi điểm danh mới." action={<button className="btn" onClick={() => setModal(true)} data-testid="button-create-class"><Plus /> Thêm lớp học</button>} />
+      <PageHeading eyebrow="Danh mục giảng dạy" title="Lớp học của bạn" subtitle="Chọn lớp để xem sĩ số hoặc mở một buổi điểm danh mới." action={currentUser.data?.role === 'admin' ? <button className="btn" onClick={() => setModal(true)} data-testid="button-create-class"><Plus /> Thêm lớp học</button> : undefined} />
       <div className="two-col">
         <section>
           <div className="filter-bar">
@@ -260,7 +297,7 @@ export function ClassesPage() {
         <section className="card section-card">
           <div className="section-head">
             <div><h2>{items.find((c) => c.id === selectedId)?.name ?? 'Danh sách học sinh'}</h2><div className="section-kicker">{selectedId ? 'Học sinh trong lớp đã chọn' : 'Chọn một lớp để xem danh sách'}</div></div>
-            {selectedId && <button className="btn" onClick={() => startSession(items.find((c) => c.id === selectedId)!)} disabled={createSession.isPending} data-testid="button-start-class-session">{createSession.isPending ? <LoaderCircle /> : <QrCode />} Bắt đầu</button>}
+            {selectedId && <div className="toolbar"><button className="btn secondary" onClick={() => { setStudentError(''); setStudentModal(true); }} data-testid="button-add-student"><Plus /> Thêm học sinh</button><button className="btn" onClick={() => startSession(items.find((c) => c.id === selectedId)!)} disabled={createSession.isPending} data-testid="button-start-class-session">{createSession.isPending ? <LoaderCircle /> : <QrCode />} Bắt đầu</button></div>}
           </div>
           {createSession.isError && <div className="error-banner" role="alert">{errorText(createSession.error)}</div>}
           {!selectedId ? <EmptyState title="Chọn lớp học" detail="Danh sách học sinh sẽ hiện ở đây." /> : students.isLoading ? <LoadingState label="Đang tải danh sách học sinh…" /> : students.isError ? <ErrorState error={students.error} retry={() => void students.refetch()} /> : !students.data?.length ? <EmptyState title="Chưa có học sinh" detail="Lớp này chưa có dữ liệu học sinh." /> : (
@@ -283,6 +320,19 @@ export function ClassesPage() {
               <label><span className="form-label">Phòng học</span><input className="field" required value={form.room} onChange={(e) => setForm({ ...form, room: e.target.value })} placeholder="Ví dụ: A203" data-testid="input-class-room" /></label>
               {formError && <div className="error-banner" role="alert">{formError}</div>}
               <button className="btn" type="submit" disabled={createClass.isPending} data-testid="button-submit-class">{createClass.isPending ? <LoaderCircle /> : <Plus />} Tạo lớp học</button>
+            </div>
+          </form>
+        </div>
+      )}
+      {studentModal && selectedId !== null && (
+        <div role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) setStudentModal(false); }} style={{ position: 'fixed', inset: 0, zIndex: 30, background: 'rgba(22,43,39,.48)', display: 'grid', placeItems: 'center', padding: 18 }}>
+          <form className="card checkin-card" onSubmit={submitStudent} style={{ width: 'min(100%, 450px)' }} data-testid="form-add-student">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}><div><div className="eyebrow">Danh sách lớp</div><h2 style={{ font: '800 22px var(--app-font-display)', letterSpacing: '-.04em', margin: 0 }}>Thêm học sinh</h2><p className="page-subtitle" style={{ marginTop: 6 }}>{items.find((c) => c.id === selectedId)?.name}</p></div><button type="button" className="icon-button" onClick={() => setStudentModal(false)} aria-label="Đóng biểu mẫu"><X /></button></div>
+            <div className="form-stack">
+              <label><span className="form-label">Họ và tên</span><input className="field" required maxLength={120} autoFocus value={studentForm.fullName} onChange={(e) => setStudentForm({ ...studentForm, fullName: e.target.value })} placeholder="Ví dụ: Nguyễn Minh Anh" data-testid="input-student-name" /></label>
+              <label><span className="form-label">Mã học sinh</span><input className="field" required maxLength={64} value={studentForm.studentCode} onChange={(e) => setStudentForm({ ...studentForm, studentCode: e.target.value })} placeholder="Ví dụ: HS1002" data-testid="input-student-code" /><span className="form-help">Mã này dùng để liên kết tài khoản học sinh sau này.</span></label>
+              {studentError && <div className="error-banner" role="alert">{studentError}</div>}
+              <button className="btn" type="submit" disabled={createStudent.isPending} data-testid="button-submit-student">{createStudent.isPending ? <LoaderCircle /> : <Plus />} Lưu học sinh</button>
             </div>
           </form>
         </div>
@@ -313,7 +363,7 @@ export function SessionPage() {
   const item = session.data;
   useEffect(() => {
     if (!item?.qrToken || item.status !== 'active') { setQrImage(''); return; }
-    const link = `${window.location.origin}/check-in?token=${encodeURIComponent(item.qrToken)}`;
+    const link = `${window.location.origin}${checkInHref(item.qrToken)}`;
     let cancelled = false;
     QRCode.toDataURL(link, { width: 360, margin: 1, color: { dark: '#173f3a', light: '#ffffff' }, errorCorrectionLevel: 'M' })
       .then((url) => { if (!cancelled) setQrImage(url); })
@@ -469,7 +519,7 @@ export function SessionPage() {
                   <>
                     <div className="qr-frame" data-testid="qr-code-display">{qrImage ? <img src={qrImage} alt={`Mã QR điểm danh ${item.className}`} data-testid="img-session-qr" /> : <div className="loading-row">Đang tạo mã QR…</div>}</div>
                     <div className="token-line" data-testid="text-qr-token">{item.qrToken}</div>
-                    <a href={`/check-in?token=${encodeURIComponent(item.qrToken)}`} className="text-link" data-testid="link-checkin-token">Mở liên kết điểm danh <ExternalLink size={12} style={{ verticalAlign: 'middle' }} /></a>
+                    <a href={checkInHref(item.qrToken)} className="text-link" data-testid="link-checkin-token">Mở liên kết điểm danh <ExternalLink size={12} style={{ verticalAlign: 'middle' }} /></a>
                     <p className="qr-note" style={{ marginTop: 13 }}>Mã hết hạn lúc {dateTime(item.qrExpiresAt)}. Chỉ xác nhận sau khi máy chủ phản hồi thành công.</p>
                   </>
                 ) : <div className="notice" data-testid="status-session-qr-closed">Buổi điểm danh đã kết thúc. Mã QR không còn hiệu lực.</div>}
@@ -522,33 +572,67 @@ function CheckInRow({ record, pending, onUpdate }: { record: AttendanceRecord; p
 }
 
 export function CheckInPage() {
-  const qc = useQueryClient();
+  const { isLoaded, isSignedIn } = useAuth();
   const searchToken = new URLSearchParams(window.location.search).get('token') ?? '';
-  const sessions = useListAttendanceSessions();
-  const checkIn = useCreateSessionCheckIn();
-  const [studentId, setStudentId] = useState('');
-  const [token, setToken] = useState(searchToken);
+  const token = searchToken.trim();
+  const currentUser = useGetCurrentSchoolUser({
+    query: { enabled: isLoaded && !!isSignedIn, queryKey: getGetCurrentSchoolUserQueryKey() },
+  });
+  const qrSession = useGetQrCheckInSession(token, {
+    query: {
+      enabled: isLoaded && !!isSignedIn && currentUser.data?.role === 'student' && !!token,
+      queryKey: getGetQrCheckInSessionQueryKey(token),
+    },
+  });
+  const checkIn = useCreateQrStudentCheckIn();
   const [submittedRecord, setSubmittedRecord] = useState<AttendanceRecord | null>(null);
+  const [alreadyCheckedIn, setAlreadyCheckedIn] = useState(false);
   const [submitError, setSubmitError] = useState('');
-  const activeSession = useMemo(() => (sessions.data ?? []).find((session) => session.status === 'active' && session.qrToken === token.trim()), [sessions.data, token]);
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    setSubmitError('');
-    setSubmittedRecord(null);
-    if (!activeSession) {
-      setSubmitError('Không tìm thấy buổi học đang mở cho mã QR này. Hãy quét lại mã mới nhất hoặc hỏi giáo viên.');
+  const [attempt, setAttempt] = useState(0);
+  const submittedToken = useRef('');
+  const student = currentUser.data;
+
+  useEffect(() => {
+    if (
+      !isLoaded ||
+      !isSignedIn ||
+      !token ||
+      student?.role !== 'student' ||
+      !student.studentId ||
+      qrSession.isError ||
+      !qrSession.data ||
+      submittedToken.current === token
+    ) {
       return;
     }
-     checkIn.mutate({ sessionId: activeSession.id, data: { studentCode: studentId.trim(), qrToken: token.trim() } }, {
+    submittedToken.current = token;
+    setSubmitError('');
+    checkIn.mutate({ token }, {
       onSuccess: (record) => {
         setSubmittedRecord(record);
-        void qc.invalidateQueries({ queryKey: getListAttendanceSessionsQueryKey() });
-        void qc.invalidateQueries({ queryKey: getGetAttendanceOverviewQueryKey() });
-        void qc.invalidateQueries({ queryKey: getListSessionCheckInsQueryKey(activeSession.id) });
-        void qc.invalidateQueries({ queryKey: getGetAttendanceSessionQueryKey(activeSession.id) });
-        void qc.invalidateQueries({ queryKey: getGetSessionReconciliationQueryKey(activeSession.id) });
+        setAlreadyCheckedIn(false);
       },
-      onError: (error) => setSubmitError(errorText(error)),
+      onError: (error) => {
+        const apiError = error as { status?: number; data?: unknown };
+        if (apiError.status === 409 && apiError.data && typeof apiError.data === 'object' && 'id' in apiError.data) {
+          setSubmittedRecord(apiError.data as AttendanceRecord);
+          setAlreadyCheckedIn(true);
+          return;
+        }
+        submittedToken.current = '';
+        setSubmitError(errorText(error));
+      },
+    });
+  }, [attempt, checkIn.mutate, isLoaded, isSignedIn, qrSession.data, qrSession.isError, student?.role, student?.studentId, token]);
+
+  const signInHref = `/sign-in?returnTo=${encodeURIComponent(`/check-in?token=${encodeURIComponent(token)}`)}`;
+  const retryCheckIn = () => {
+    submittedToken.current = '';
+    setSubmittedRecord(null);
+    setAlreadyCheckedIn(false);
+    setSubmitError('');
+    void qrSession.refetch().then((result) => {
+      if (result.isSuccess) setAttempt((value) => value + 1);
     });
   };
   return (
@@ -557,18 +641,31 @@ export function CheckInPage() {
         <div className="checkin-brand"><span className="brand-icon">Đ</span><div><div className="brand-name">Điểm danh</div><div className="brand-caption" style={{ color: '#65756d' }}>Cổng xác nhận học sinh</div></div></div>
         <section className="card checkin-card">
           <div className="eyebrow">Xác nhận có mặt</div>
-          <h1>Chào bạn, sẵn sàng điểm danh?</h1>
-          <p className="page-subtitle">Nhập mã học sinh và mã phiên được giáo viên chia sẻ. Kết quả chỉ được xác nhận khi hệ thống phản hồi thành công.</p>
-          {sessions.isLoading && <div style={{ marginTop: 17 }}><LoadingState label="Đang kiểm tra phiên điểm danh…" /></div>}
-          {sessions.isError && <ErrorState error={sessions.error} retry={() => void sessions.refetch()} />}
-          <form className="form-stack" onSubmit={submit} data-testid="form-student-checkin">
-             <label><span className="form-label">Mã học sinh</span><input className="field" required value={studentId} onChange={(e) => setStudentId(e.target.value)} placeholder="Ví dụ: HS1001" data-testid="input-student-id" /><span className="form-help">Sử dụng mã học sinh được trường cấp, không nhập họ tên.</span></label>
-            <label><span className="form-label">Mã QR / mã phiên</span><input className="field" required value={token} onChange={(e) => setToken(e.target.value)} placeholder="Mã được điền từ liên kết QR" data-testid="input-checkin-token" /><span className="form-help">{activeSession ? `Phiên đang mở: ${activeSession.className} · ${activeSession.subject}` : 'Mở liên kết từ mã QR để tự điền mã phiên.'}</span></label>
-            {submitError && <div className="error-banner" role="alert" data-testid="status-checkin-error">{submitError}</div>}
-            {submittedRecord && <div className="success-banner" role="status" data-testid="status-checkin-success"><strong>Máy chủ đã xác nhận điểm danh.</strong><br />{submittedRecord.studentName} · {submittedRecord.studentCode} · {dateTime(submittedRecord.checkedInAt)}</div>}
-            <button type="submit" className="btn" disabled={checkIn.isPending || sessions.isLoading || sessions.isError} data-testid="button-submit-checkin">{checkIn.isPending ? <LoaderCircle /> : <CheckCheck />} Gửi xác nhận</button>
-          </form>
-          <div className="privacy-strip" style={{ marginTop: 18 }}><strong>Không cần tài khoản.</strong> Dữ liệu gửi trực tiếp đến hệ thống điểm danh của lớp.</div>
+          {!token ? <>
+            <h1>Chưa có mã QR buổi học</h1>
+            <p className="page-subtitle">Hãy quét mã QR đang được giáo viên hiển thị để mở đúng phiên điểm danh.</p>
+          </> : <>
+            <h1>{submittedRecord ? (alreadyCheckedIn ? 'Bạn đã điểm danh rồi' : 'Điểm danh thành công') : 'Xác nhận có mặt'}</h1>
+            <p className="page-subtitle">Mã QR được xác nhận bằng tài khoản trường đã liên kết với hồ sơ học sinh. Không cần nhập mã học sinh.</p>
+            {!isLoaded || (isSignedIn && currentUser.isLoading) ? <div style={{ marginTop: 17 }}><LoadingState label="Đang xác minh tài khoản…" /></div> :
+              !isSignedIn ? <div className="form-stack" style={{ marginTop: 18 }}>
+                <div className="notice">Đăng nhập bằng tài khoản học sinh đã được nhà trường liên kết để hệ thống tự ghi nhận có mặt.</div>
+                <Link className="btn" href={signInHref} data-testid="link-checkin-sign-in">Đăng nhập để điểm danh</Link>
+                <p className="form-help">Sau khi đăng nhập, bạn sẽ quay lại đúng mã QR này.</p>
+              </div> :
+                currentUser.isError ? <ErrorState error={currentUser.error} retry={() => void currentUser.refetch()} /> :
+                  student?.role === 'pending' ? <div className="notice" role="status">Tài khoản đang chờ quản trị viên cấp vai trò học sinh.</div> :
+                    student?.role !== 'student' ? <div className="notice" role="status">Mã QR điểm danh chỉ dành cho tài khoản học sinh. Hãy đăng xuất và dùng tài khoản học sinh đã được liên kết.</div> :
+                      !student.studentId ? <div className="notice" role="status">Tài khoản chưa được liên kết với hồ sơ học sinh. Hãy nhờ quản trị viên hoàn tất liên kết trước khi điểm danh.</div> :
+                        qrSession.isLoading ? <div style={{ marginTop: 17 }}><LoadingState label="Đang xác minh mã QR…" /></div> :
+                          qrSession.isError ? <div className="error-banner" role="alert" data-testid="status-checkin-error">{errorText(qrSession.error)}<button className="text-link" style={{ marginLeft: 8 }} onClick={() => void qrSession.refetch()}>Thử lại</button></div> :
+                            qrSession.data && <div className="notice" style={{ marginTop: 17 }}><strong>{qrSession.data.className} · {qrSession.data.subject}</strong><br />Mã QR hợp lệ đến {dateTime(qrSession.data.qrExpiresAt)}.</div>
+            }
+            {checkIn.isPending && <div style={{ marginTop: 17 }}><LoadingState label="Đang ghi nhận điểm danh…" /></div>}
+            {submitError && <div className="error-banner" role="alert" data-testid="status-checkin-error">{submitError}<button className="text-link" style={{ marginLeft: 8 }} onClick={retryCheckIn}>Thử lại</button></div>}
+            {submittedRecord && <div className="success-banner" role="status" data-testid="status-checkin-success"><strong>{alreadyCheckedIn ? 'Điểm danh đã được ghi nhận trước đó.' : 'Máy chủ đã xác nhận điểm danh.'}</strong><br />{submittedRecord.studentName} · {submittedRecord.studentCode} · {dateTime(submittedRecord.checkedInAt)}</div>}
+          </>}
+          <div className="privacy-strip" style={{ marginTop: 18 }}><strong>Không nhận diện khuôn mặt.</strong> Điểm danh gắn với tài khoản trường và hồ sơ học sinh đã được xác minh.</div>
         </section>
       </div>
     </main>

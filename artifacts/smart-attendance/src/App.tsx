@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useRef } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import { ClerkProvider, SignIn, SignUp, useAuth, useClerk, useUser } from '@clerk/react';
+import { ClerkProvider, SignIn, SignUp, useAuth, useClerk } from '@clerk/react';
 import { publishableKeyFromHost } from '@clerk/react/internal';
 import { shadcn } from '@clerk/themes';
 import { ErrorBoundary } from '@/components/error-boundary';
@@ -56,9 +56,13 @@ function ClerkQueryClientCacheInvalidator() {
 }
 
 function AuthPages({ signUp = false }: { signUp?: boolean }) {
+  const returnTo = new URLSearchParams(window.location.search).get('returnTo');
+  const checkInReturn = returnTo?.startsWith('/check-in?token=') && !returnTo.startsWith('//')
+    ? `${basePath}${returnTo}`
+    : undefined;
   return <div className="signin-wrap"><div className="signin-brand"><span className="brand-icon">Đ</span><span><span className="brand-name">Điểm danh</span><span className="brand-caption" style={{ color: '#65756d' }}>Sổ lớp thông minh</span></span></div>
-    <div>{signUp ? <SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} /> : <SignIn routing="path" path={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} />}
-      <p className="signin-note">Không gian điểm danh đáng tin cậy cho nhà trường. Tài khoản mới sẽ chờ quản trị viên xác nhận vai trò trước khi truy cập.</p>
+    <div>{signUp ? <SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} forceRedirectUrl={checkInReturn} fallbackRedirectUrl={`${basePath}/`} /> : <SignIn routing="path" path={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} forceRedirectUrl={checkInReturn} fallbackRedirectUrl={`${basePath}/`} />}
+      <p className="signin-note">Tài khoản đầu tiên sẽ trở thành quản trị viên trường. Các tài khoản tiếp theo chờ quản trị viên phân quyền.</p>
     </div>
   </div>;
 }
@@ -68,7 +72,7 @@ function HomePage() {
   const user = useGetCurrentSchoolUser({ query: { enabled: !!isSignedIn, queryKey: getGetCurrentSchoolUserQueryKey() } });
   if (isSignedIn) {
     if (!isLoaded || user.isLoading) return <main className="page-wrap"><div className="loading-row">Đang mở không gian trường học…</div></main>;
-    if (user.data?.role === 'admin') return <Redirect to="/admin/users" />;
+    if (user.data?.role === 'admin') return <AppShell><DashboardPage /></AppShell>;
     if (user.data?.role === 'teacher') return <Redirect to="/classes" />;
     if (user.data?.role === 'student') return <Redirect to="/student" />;
     if (user.isError) return <main className="page-wrap"><div className="error-banner">Chưa thể tải hồ sơ trường học. <button className="text-link" onClick={() => void user.refetch()}>Thử lại</button></div></main>;

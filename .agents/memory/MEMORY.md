@@ -1,1 +1,2 @@
 - [Camera attendance privacy](camera-attendance-privacy.md) — classroom cameras estimate headcount only; never identify students or use face recognition.
+- [School attendance roles and QR](school-attendance-roles-qr.md) — students use linked school accounts for QR check-in; staff access is role- and class-scoped.
