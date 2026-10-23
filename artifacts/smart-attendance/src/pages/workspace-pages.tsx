@@ -1,9 +1,11 @@
+import { loadPeopleModel } from '@/lib/camera-model';
+import { toCsv } from '@/lib/csv';
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useLocation, useRoute } from 'wouter';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@clerk/react';
 import QRCode from 'qrcode';
-import * as cocoSsd from '@tensorflow-models/coco-ssd';
+import type { ObjectDetection } from '@tensorflow-models/coco-ssd';
 import {
   getGetCurrentSchoolUserQueryKey,
   useGetAttendanceOverview,
@@ -359,7 +361,8 @@ export function SessionPage() {
   const [cameraCount, setCameraCount] = useState<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const modelRef = useRef<cocoSsd.ObjectDetection | null>(null);
+  const modelRef = useRef<ObjectDetection | null>(null);
+  const cameraRequestRef = useRef(0);
   const item = session.data;
   useEffect(() => {
     if (!item?.qrToken || item.status !== 'active') { setQrImage(''); return; }
@@ -371,7 +374,10 @@ export function SessionPage() {
     return () => { cancelled = true; };
   }, [item?.qrToken, item?.status]);
   useEffect(() => () => {
+    cameraRequestRef.current++;
     streamRef.current?.getTracks().forEach((track) => track.stop());
+    modelRef.current?.dispose();
+    modelRef.current = null;
   }, []);
   const refresh = () => {
     void session.refetch();
@@ -396,6 +402,7 @@ export function SessionPage() {
     });
   };
   const stopCamera = () => {
+    cameraRequestRef.current++;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
@@ -405,6 +412,7 @@ export function SessionPage() {
   };
   useEffect(() => {
     if (item?.status !== 'active') {
+      cameraRequestRef.current++;
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
       if (videoRef.current) videoRef.current.srcObject = null;
@@ -417,6 +425,7 @@ export function SessionPage() {
       setCameraMessage('Trình duyệt này không hỗ trợ truy cập camera. Hãy dùng camera thử nghiệm trên trình duyệt hiện đại.');
       return;
     }
+    const requestId = ++cameraRequestRef.current;
     setCameraState('starting');
     setCameraMessage('Đang mở camera và tải mô hình đếm người về thiết bị…');
     try {
@@ -424,9 +433,12 @@ export function SessionPage() {
         video: { facingMode: 'environment' },
         audio: false,
       });
+      if (requestId !== cameraRequestRef.current) { stream.getTracks().forEach(track => track.stop()); return; }
       streamRef.current = stream;
       if (!modelRef.current) {
-        modelRef.current = await cocoSsd.load({ base: 'mobilenet_v2' });
+        const model = await loadPeopleModel();
+        if (requestId !== cameraRequestRef.current) { model.dispose(); return; }
+        modelRef.current = model;
       }
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -435,6 +447,7 @@ export function SessionPage() {
       setCameraState('ready');
       setCameraMessage('Camera đã sẵn sàng. Khung hình được phân tích ngay trên thiết bị.');
     } catch (error) {
+      if (requestId !== cameraRequestRef.current) return;
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
       setCameraState('error');
@@ -514,7 +527,7 @@ export function SessionPage() {
             </section>
             <aside>
               <div className="card qr-card">
-                <div className="eyebrow">Điểm danh bằng QR</div><h2>Quét để mở biểu mẫu</h2><p className="section-kicker">Học sinh nhập mã định danh của mình.</p>
+                <div className="eyebrow">Điểm danh bằng QR</div><h2>Quét để mở biểu mẫu</h2><p className="section-kicker">Học sinh đăng nhập bằng tài khoản trường đã liên kết.</p>
                 {item.status === 'active' ? (
                   <>
                     <div className="qr-frame" data-testid="qr-code-display">{qrImage ? <img src={qrImage} alt={`Mã QR điểm danh ${item.className}`} data-testid="img-session-qr" /> : <div className="loading-row">Đang tạo mã QR…</div>}</div>
@@ -680,7 +693,7 @@ export function ReportsPage() {
   const exportCsv = () => {
     if (!report.data) return;
     const csvRows = [['Lớp', 'Sĩ số', 'Tỷ lệ có mặt', 'Số buổi'], ...report.data.rows.map((row) => [row.className, String(row.studentCount), `${row.attendanceRate.toFixed(1)}%`, String(row.sessionsCount)])];
-    const csv = '\uFEFF' + csvRows.map((row) => row.map((item) => `"${item.replaceAll('"', '""')}"`).join(',')).join('\n');
+    const csv = toCsv(csvRows);
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const anchor = document.createElement('a');
     anchor.href = url;

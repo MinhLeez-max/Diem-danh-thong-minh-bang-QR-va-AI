@@ -1,7 +1,6 @@
 import { type ReactNode, useEffect, useRef } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { ClerkProvider, SignIn, SignUp, useAuth, useClerk } from '@clerk/react';
-import { publishableKeyFromHost } from '@clerk/react/internal';
 import { shadcn } from '@clerk/themes';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
@@ -10,12 +9,12 @@ import { AppShell } from '@/components/app-shell';
 import { CheckInPage, ClassesPage, DashboardPage, ReportsPage, SessionPage } from '@/pages/workspace-pages';
 import { AdminUsersPage } from '@/pages/admin-users-page';
 import { Route, Switch, useLocation, Router as WouterRouter, Redirect, Link } from 'wouter';
-import { getGetCurrentSchoolUserQueryKey, useGetCurrentSchoolUser } from '@workspace/api-client-react';
+import { getGetCurrentSchoolUserQueryKey, useGetCurrentSchoolUser, useGetStudentAttendance, getGetStudentAttendanceQueryKey } from '@workspace/api-client-react';
 import { BookOpenCheck, ClipboardCheck, GraduationCap, ShieldCheck } from 'lucide-react';
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, staleTime: 15_000, refetchOnWindowFocus: true } } });
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
-const clerkPubKey = publishableKeyFromHost(window.location.hostname, import.meta.env.VITE_CLERK_PUBLISHABLE_KEY);
+const clerkPubKey = String(import.meta.env.VITE_CLERK_PUBLISHABLE_KEY ?? '');
 const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
 function stripBase(path: string) { return basePath && path.startsWith(basePath) ? path.slice(basePath.length) || '/' : path; }
 const clerkAppearance = {
@@ -97,6 +96,16 @@ function HomePage() {
   </main>;
 }
 
+function StudentHistory() {
+  const history = useGetStudentAttendance({ query: { queryKey: getGetStudentAttendanceQueryKey(), refetchInterval: 30_000 } });
+  const statusText = { present: 'Có mặt', late: 'Đi muộn', absent: 'Vắng' };
+  return <section className="card section-card" style={{ marginTop: 20 }}>
+    <div className="section-head"><div><h2>Lịch sử điểm danh</h2><div className="section-kicker">100 lượt ghi nhận gần nhất của riêng bạn</div></div><button className="btn secondary" onClick={() => void history.refetch()}>Làm mới</button></div>
+    {history.isLoading ? <p>Đang tải lịch sử…</p> : history.isError ? <div className="error-banner" role="alert">Không thể tải lịch sử điểm danh. Hãy thử làm mới.</div> : !history.data?.length ? <p className="notice">Bạn chưa có lượt điểm danh nào được ghi nhận.</p> :
+      <div className="table-wrap"><table><thead><tr><th>Buổi học</th><th>Lớp · Môn học</th><th>Trạng thái</th><th>Giờ điểm danh</th></tr></thead><tbody>{history.data.map(entry => <tr key={entry.id}><td>{new Date(entry.startedAt).toLocaleString('vi-VN')}</td><td>{entry.className} · {entry.subject}</td><td>{statusText[entry.status]}</td><td>{entry.checkedInAt ? new Date(entry.checkedInAt).toLocaleString('vi-VN') : '—'}</td></tr>)}</tbody></table></div>}
+  </section>;
+}
+
 function StudentHome() {
   const { isSignedIn } = useAuth();
   const current = useGetCurrentSchoolUser({ query: { enabled: !!isSignedIn, queryKey: getGetCurrentSchoolUserQueryKey() } });
@@ -111,6 +120,7 @@ function StudentHome() {
       {current.data?.studentId ? <><p className="page-subtitle" style={{ lineHeight: 1.7 }}>Khi quét mã, hệ thống sẽ tự xác nhận bằng tài khoản đã liên kết với hồ sơ lớp của bạn.</p><div className="token-card"><strong>Mã học sinh</strong><div className="student-code">{current.data.studentCode}</div></div></> :
         <div className="notice">Tài khoản của bạn chưa được liên kết với hồ sơ học sinh. Hãy nhờ quản trị viên kết nối tài khoản trước khi điểm danh.</div>}
     </section>
+    {current.data?.role === 'student' && current.data.studentId && <StudentHistory />}
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16 }}><span className="page-subtitle">Không dùng nhận diện khuôn mặt hoặc lưu hình ảnh.</span><button className="btn ghost" onClick={() => setLocation('/sign-in')}>Đăng nhập lại</button></div>
   </main>;
 }
@@ -173,6 +183,7 @@ function RootRouter() {
 function NotFound() { return <main className="page-wrap"><h1>Không tìm thấy trang</h1><p className="page-subtitle">Địa chỉ này không tồn tại trong không gian trường học.</p><Link href="/" className="btn" style={{ marginTop: 16 }}>Về trang chủ</Link></main>; }
 
 function App() {
+  if (!clerkPubKey) return <main className="page-wrap"><section className="card section-card"><h1>Đăng nhập chưa được cấu hình</h1><p className="page-subtitle">Nhà trường cần hoàn tất cấu hình đăng nhập trước khi sử dụng hệ thống. Vui lòng liên hệ quản trị viên.</p></section></main>;
   return <QueryClientProvider client={queryClient}><TooltipProvider><WouterRouter base={basePath}><RootRouter /></WouterRouter><Toaster /></TooltipProvider></QueryClientProvider>;
 }
 export default App;

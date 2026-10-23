@@ -1,53 +1,40 @@
-import { and, eq } from "drizzle-orm";
 import { Router, type IRouter } from "express";
 import {
   CreateQrStudentCheckInParams,
   CreateQrStudentCheckInResponse,
   GetQrCheckInSessionParams,
   GetQrCheckInSessionResponse,
+  GetStudentAttendanceResponse,
 } from "@workspace/api-zod";
-import {
-  attendanceRecordsTable,
-  attendanceSessionsTable,
-  classroomsTable,
-  db,
-  studentsTable,
-} from "@workspace/db";
-import {
-  currentSchoolUser,
-  requireRole,
-} from "../middlewares/schoolAuth";
+import { db, type AttendanceRecord, type Student } from "@workspace/db";
+import { currentSchoolUser, requireRole } from "../middlewares/schoolAuth";
+
+import { recordCheckIn } from "../services/attendance";
 
 const router: IRouter = Router();
 router.use("/qr", requireRole("student"));
 
 async function getActiveQrSession(token: string) {
-  const [joined] = await db
-    .select({
-      session: attendanceSessionsTable,
-      classroom: classroomsTable,
-    })
-    .from(attendanceSessionsTable)
-    .innerJoin(
-      classroomsTable,
-      eq(attendanceSessionsTable.classId, classroomsTable.id),
-    )
-    .where(eq(attendanceSessionsTable.qrToken, token))
-    .limit(1);
+  const session = await db
+    .selectFrom("attendanceSessions")
+    .selectAll()
+    .where("qrToken", "=", token)
+    .executeTakeFirst();
   if (
-    !joined ||
-    joined.session.status !== "active" ||
-    joined.session.qrExpiresAt.getTime() <= Date.now()
-  ) {
+    !session ||
+    session.status !== "active" ||
+    session.qrExpiresAt.getTime() <= Date.now()
+  )
     return null;
-  }
-  return joined;
+  const classroom = await db
+    .selectFrom("classrooms")
+    .selectAll()
+    .where("id", "=", session.classId)
+    .executeTakeFirstOrThrow();
+  return { session, classroom };
 }
 
-async function attendancePayload(
-  record: typeof attendanceRecordsTable.$inferSelect,
-  student: typeof studentsTable.$inferSelect,
-) {
+async function attendancePayload(record: AttendanceRecord, student: Student) {
   return {
     id: record.id,
     sessionId: record.sessionId,
@@ -59,6 +46,37 @@ async function attendancePayload(
     updatedAt: record.updatedAt,
   };
 }
+
+router.get("/student/attendance", requireRole("student"), async (_req, res) => {
+  const user = currentSchoolUser(res);
+  if (!user.studentId) {
+    res.json([]);
+    return;
+  }
+  const history = await db
+    .selectFrom("attendanceRecords")
+    .innerJoin(
+      "attendanceSessions",
+      "attendanceRecords.sessionId",
+      "attendanceSessions.id",
+    )
+    .innerJoin("classrooms", "attendanceSessions.classId", "classrooms.id")
+    .where("attendanceRecords.studentId", "=", user.studentId)
+    .select([
+      "attendanceRecords.id",
+      "attendanceRecords.sessionId",
+      "classrooms.name as className",
+      "classrooms.subject",
+      "attendanceSessions.startedAt",
+      "attendanceRecords.status",
+      "attendanceRecords.checkedInAt",
+    ])
+    .orderBy("attendanceSessions.startedAt", "desc")
+    .orderBy("attendanceRecords.id", "desc")
+    .top(100)
+    .execute();
+  res.json(GetStudentAttendanceResponse.parse(history));
+});
 
 router.get("/qr/:token", async (req, res): Promise<void> => {
   const params = GetQrCheckInSessionParams.safeParse(req.params);
@@ -105,12 +123,15 @@ router.post("/qr/:token/check-in", async (req, res): Promise<void> => {
     return;
   }
   const [student] = await db
-    .select()
-    .from(studentsTable)
-    .where(eq(studentsTable.id, user.studentId))
-    .limit(1);
+    .selectFrom("students")
+    .where((eb) => eb("students.id", "=", user.studentId))
+    .top(1)
+    .selectAll()
+    .execute();
   if (!student) {
-    res.status(400).json({ error: "Hồ sơ học sinh đã liên kết không còn tồn tại." });
+    res
+      .status(400)
+      .json({ error: "Hồ sơ học sinh đã liên kết không còn tồn tại." });
     return;
   }
   if (student.classId !== joined.session.classId) {
@@ -120,70 +141,18 @@ router.post("/qr/:token/check-in", async (req, res): Promise<void> => {
     return;
   }
 
-  const [existing] = await db
-    .select()
-    .from(attendanceRecordsTable)
-    .where(
-      and(
-        eq(attendanceRecordsTable.sessionId, joined.session.id),
-        eq(attendanceRecordsTable.studentId, student.id),
-      ),
-    )
-    .limit(1);
-  if (existing) {
-    res.status(409).json(
-      CreateQrStudentCheckInResponse.parse(
-        await attendancePayload(existing, student),
-      ),
-    );
-    return;
-  }
-
-  const now = new Date();
-  try {
-    const [record] = await db
-      .insert(attendanceRecordsTable)
-      .values({
-        sessionId: joined.session.id,
-        studentId: student.id,
-        status: "present",
-        checkedInAt: now,
-        updatedAt: now,
-      })
-      .returning();
-    res.status(201).json(
+  const { record, duplicate } = await recordCheckIn(
+    joined.session.id,
+    student.id,
+    params.data.token,
+  );
+  res
+    .status(duplicate ? 409 : 201)
+    .json(
       CreateQrStudentCheckInResponse.parse(
         await attendancePayload(record, student),
       ),
     );
-  } catch (error) {
-    // The unique session/student index is the final guard against double scans.
-    const code =
-      typeof error === "object" && error !== null && "code" in error
-        ? String(error.code)
-        : "";
-    if (code === "23505") {
-      const [record] = await db
-        .select()
-        .from(attendanceRecordsTable)
-        .where(
-          and(
-            eq(attendanceRecordsTable.sessionId, joined.session.id),
-            eq(attendanceRecordsTable.studentId, student.id),
-          ),
-        )
-        .limit(1);
-      if (record) {
-        res.status(409).json(
-          CreateQrStudentCheckInResponse.parse(
-            await attendancePayload(record, student),
-          ),
-        );
-        return;
-      }
-    }
-    throw error;
-  }
 });
 
 export default router;

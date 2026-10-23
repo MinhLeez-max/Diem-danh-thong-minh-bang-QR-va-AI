@@ -1,12 +1,5 @@
+import { trimInput } from "../lib/input";
 import { randomUUID } from "node:crypto";
-import {
-  and,
-  count,
-  desc,
-  eq,
-  inArray,
-  ne,
-} from "drizzle-orm";
 import { Router, type IRouter, type Response } from "express";
 import {
   CloseAttendanceSessionParams,
@@ -42,14 +35,7 @@ import {
   UpdateAttendanceRecordBody,
   UpdateAttendanceRecordResponse,
 } from "@workspace/api-zod";
-import {
-  attendanceRecordsTable,
-  attendanceSessionsTable,
-  classroomsTable,
-  countSnapshotsTable,
-  db,
-  studentsTable,
-} from "@workspace/db";
+import { db, isUniqueViolation, type Classroom } from "@workspace/db";
 import {
   accessibleClassIds,
   currentSchoolUser,
@@ -57,8 +43,16 @@ import {
   requireRole,
 } from "../middlewares/schoolAuth";
 
+import {
+  openSession,
+  closeSession,
+  recordCheckIn,
+  saveCountSnapshot,
+  QR_TTL_MS,
+} from "../services/attendance";
+
 const router: IRouter = Router();
-const QR_TTL_MS = 45_000;
+
 const REVIEW_DIFFERENCE = 2;
 const REVIEW_CONFIDENCE = 0.65;
 
@@ -66,23 +60,28 @@ function iso(value: Date | null): string | null {
   return value ? value.toISOString() : null;
 }
 
-async function getClassCounts(classId: number, sessionId: number): Promise<{
+async function getClassCounts(
+  classId: number,
+  sessionId: number,
+): Promise<{
   studentCount: number;
   checkedInCount: number;
 }> {
   const [studentResult] = await db
-    .select({ value: count() })
-    .from(studentsTable)
-    .where(eq(studentsTable.classId, classId));
+    .selectFrom("students")
+    .where((eb) => eb("students.classId", "=", classId))
+    .select((eb) => [eb.fn.countAll<number>().as("value")])
+    .execute();
   const [checkInResult] = await db
-    .select({ value: count() })
-    .from(attendanceRecordsTable)
-    .where(
-      and(
-        eq(attendanceRecordsTable.sessionId, sessionId),
-        ne(attendanceRecordsTable.status, "absent"),
-      ),
-    );
+    .selectFrom("attendanceRecords")
+    .where((eb) =>
+      eb.and([
+        eb("attendanceRecords.sessionId", "=", sessionId),
+        eb("attendanceRecords.status", "!=", "absent"),
+      ]),
+    )
+    .select((eb) => [eb.fn.countAll<number>().as("value")])
+    .execute();
   return {
     studentCount: Number(studentResult?.value ?? 0),
     checkedInCount: Number(checkInResult?.value ?? 0),
@@ -90,44 +89,49 @@ async function getClassCounts(classId: number, sessionId: number): Promise<{
 }
 
 async function getSessionPayload(sessionId: number) {
-  const [joined] = await db
-    .select({
-      session: attendanceSessionsTable,
-      classroom: classroomsTable,
-    })
-    .from(attendanceSessionsTable)
-    .innerJoin(
-      classroomsTable,
-      eq(attendanceSessionsTable.classId, classroomsTable.id),
-    )
-    .where(eq(attendanceSessionsTable.id, sessionId));
-  if (!joined) {
-    return null;
-  }
-
-  let session = joined.session;
+  let session = await db
+    .selectFrom("attendanceSessions")
+    .selectAll()
+    .where("id", "=", sessionId)
+    .executeTakeFirst();
+  if (!session) return null;
+  const classroom = await db
+    .selectFrom("classrooms")
+    .selectAll()
+    .where("id", "=", session.classId)
+    .executeTakeFirstOrThrow();
   if (
     session.status === "active" &&
     session.qrExpiresAt.getTime() <= Date.now()
   ) {
-    const nextToken = randomUUID();
-    const nextExpiry = new Date(Date.now() + QR_TTL_MS);
-    const [updated] = await db
-      .update(attendanceSessionsTable)
-      .set({ qrToken: nextToken, qrExpiresAt: nextExpiry })
-      .where(eq(attendanceSessionsTable.id, sessionId))
-      .returning();
-    if (updated) {
-      session = updated;
-    }
+    // Only one concurrent reader rotates the expired token. Never rotate a
+    // session another request has just closed or refreshed.
+    const updated = await db
+      .updateTable("attendanceSessions")
+      .set({
+        qrToken: randomUUID(),
+        qrExpiresAt: new Date(Date.now() + QR_TTL_MS),
+      })
+      .where("id", "=", sessionId)
+      .where("status", "=", "active")
+      .where("qrToken", "=", session.qrToken)
+      .outputAll("inserted")
+      .executeTakeFirst();
+    session =
+      updated ??
+      (await db
+        .selectFrom("attendanceSessions")
+        .selectAll()
+        .where("id", "=", sessionId)
+        .executeTakeFirstOrThrow());
   }
 
   const counts = await getClassCounts(session.classId, session.id);
   return {
     id: session.id,
     classId: session.classId,
-    className: joined.classroom.name,
-    subject: joined.classroom.subject,
+    className: classroom.name,
+    subject: classroom.subject,
     status: session.status,
     startedAt: session.startedAt.toISOString(),
     endedAt: iso(session.endedAt),
@@ -138,11 +142,12 @@ async function getSessionPayload(sessionId: number) {
   };
 }
 
-async function getClassroomPayload(classroom: typeof classroomsTable.$inferSelect) {
+async function getClassroomPayload(classroom: Classroom) {
   const [result] = await db
-    .select({ value: count() })
-    .from(studentsTable)
-    .where(eq(studentsTable.classId, classroom.id));
+    .selectFrom("students")
+    .where((eb) => eb("students.classId", "=", classroom.id))
+    .select((eb) => [eb.fn.countAll<number>().as("value")])
+    .execute();
   return {
     id: classroom.id,
     name: classroom.name,
@@ -157,10 +162,11 @@ async function ensureSessionAccess(
   sessionId: number,
 ): Promise<boolean> {
   const [session] = await db
-    .select({ classId: attendanceSessionsTable.classId })
-    .from(attendanceSessionsTable)
-    .where(eq(attendanceSessionsTable.id, sessionId))
-    .limit(1);
+    .selectFrom("attendanceSessions")
+    .where((eb) => eb("attendanceSessions.id", "=", sessionId))
+    .top(1)
+    .select(["attendanceSessions.classId as classId"])
+    .execute();
   if (!session) {
     res.status(404).json({ error: "Session not found" });
     return false;
@@ -170,15 +176,17 @@ async function ensureSessionAccess(
 
 router.get("/attendance/overview", async (req, res): Promise<void> => {
   const allowedIds = await accessibleClassIds(currentSchoolUser(res));
-  const [allClassrooms, allStudents, allSessions, allRecords] = await Promise.all([
-    db.select().from(classroomsTable),
-    db.select().from(studentsTable),
-    db
-      .select()
-      .from(attendanceSessionsTable)
-      .orderBy(desc(attendanceSessionsTable.startedAt)),
-    db.select().from(attendanceRecordsTable),
-  ]);
+  const [allClassrooms, allStudents, allSessions, allRecords] =
+    await Promise.all([
+      db.selectFrom("classrooms").selectAll().execute(),
+      db.selectFrom("students").selectAll().execute(),
+      db
+        .selectFrom("attendanceSessions")
+        .orderBy("attendanceSessions.startedAt", "desc")
+        .selectAll()
+        .execute(),
+      db.selectFrom("attendanceRecords").selectAll().execute(),
+    ]);
 
   const allowedSet = allowedIds === null ? null : new Set(allowedIds);
   const classrooms =
@@ -186,7 +194,9 @@ router.get("/attendance/overview", async (req, res): Promise<void> => {
       ? allClassrooms
       : allClassrooms.filter((classroom) => allowedSet.has(classroom.id));
   const classIds = new Set(classrooms.map((classroom) => classroom.id));
-  const students = allStudents.filter((student) => classIds.has(student.classId));
+  const students = allStudents.filter((student) =>
+    classIds.has(student.classId),
+  );
   const sessions = allSessions.filter((session) =>
     classIds.has(session.classId),
   );
@@ -198,10 +208,15 @@ router.get("/attendance/overview", async (req, res): Promise<void> => {
   const sessionPayloads = await Promise.all(
     recentSessions.map((session) => getSessionPayload(session.id)),
   );
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
+  const dayFormat = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const todayKey = dayFormat.format(new Date());
   const todayCount = sessions.filter(
-    (session) => session.startedAt.getTime() >= today.getTime(),
+    (session) => dayFormat.format(session.startedAt) === todayKey,
   ).length;
   const presentCount = records.filter(
     (record) => record.status === "present" || record.status === "late",
@@ -209,7 +224,10 @@ router.get("/attendance/overview", async (req, res): Promise<void> => {
   const possibleCount = sessions.reduce((total, session) => {
     return (
       total +
-      students.filter((student) => student.classId === session.classId).length
+      (session.status === "closed"
+        ? records.filter((record) => record.sessionId === session.id).length
+        : students.filter((student) => student.classId === session.classId)
+            .length)
     );
   }, 0);
   const activities = sessions.slice(0, 4).map((session, index) => {
@@ -222,7 +240,10 @@ router.get("/attendance/overview", async (req, res): Promise<void> => {
         session.status === "active"
           ? `Đang diễn ra điểm danh ${classroom?.name ?? "lớp học"}`
           : `Đã kết thúc điểm danh ${classroom?.name ?? "lớp học"}`,
-      createdAt: (index === 0 ? session.startedAt : session.endedAt ?? session.startedAt).toISOString(),
+      createdAt: (index === 0
+        ? session.startedAt
+        : (session.endedAt ?? session.startedAt)
+      ).toISOString(),
     };
   });
 
@@ -246,7 +267,7 @@ router.get("/attendance/overview", async (req, res): Promise<void> => {
 
 router.get("/classes", async (_req, res): Promise<void> => {
   const allowedIds = await accessibleClassIds(currentSchoolUser(res));
-  const allClassrooms = await db.select().from(classroomsTable);
+  const allClassrooms = await db.selectFrom("classrooms").selectAll().execute();
   const classrooms =
     allowedIds === null
       ? allClassrooms
@@ -255,21 +276,26 @@ router.get("/classes", async (_req, res): Promise<void> => {
   res.json(ListClassesResponse.parse(payload));
 });
 
-router.post("/classes", requireRole("admin"), async (req, res): Promise<void> => {
-  const input = CreateClassBody.safeParse(req.body);
-  if (!input.success) {
-    req.log.warn({ errors: input.error.message }, "Invalid class input");
-    res.status(400).json({ error: input.error.message });
-    return;
-  }
+router.post(
+  "/classes",
+  requireRole("admin"),
+  async (req, res): Promise<void> => {
+    const input = CreateClassBody.safeParse(trimInput(req.body));
+    if (!input.success) {
+      req.log.warn({ errors: input.error.message }, "Invalid class input");
+      res.status(400).json({ error: input.error.message });
+      return;
+    }
 
-  const [classroom] = await db
-    .insert(classroomsTable)
-    .values(input.data)
-    .returning();
-  const payload = await getClassroomPayload(classroom);
-  res.status(201).json(CreateClassResponse.parse(payload));
-});
+    const [classroom] = await db
+      .insertInto("classrooms")
+      .values(input.data)
+      .outputAll("inserted")
+      .execute();
+    const payload = await getClassroomPayload(classroom);
+    res.status(201).json(CreateClassResponse.parse(payload));
+  },
+);
 
 router.get("/classes/:classId/students", async (req, res): Promise<void> => {
   const params = ListClassStudentsParams.safeParse(req.params);
@@ -281,21 +307,31 @@ router.get("/classes/:classId/students", async (req, res): Promise<void> => {
     return;
   }
   const students = await db
-    .select()
-    .from(studentsTable)
-    .where(eq(studentsTable.classId, params.data.classId));
+    .selectFrom("students")
+    .where((eb) => eb("students.classId", "=", params.data.classId))
+    .selectAll()
+    .execute();
   const sessions = await db
-    .select()
-    .from(attendanceSessionsTable)
-    .where(eq(attendanceSessionsTable.classId, params.data.classId));
-  const records = await db.select().from(attendanceRecordsTable);
+    .selectFrom("attendanceSessions")
+    .where((eb) => eb("attendanceSessions.classId", "=", params.data.classId))
+    .selectAll()
+    .execute();
+  const records = await db
+    .selectFrom("attendanceRecords")
+    .selectAll()
+    .execute();
   const payload = students.map((student) => {
-    const classSessions = sessions.length;
-    const attended = records.filter(
+    const studentRecords = records.filter(
       (record) =>
         record.studentId === student.id &&
-        record.status !== "absent" &&
-        sessions.some((session) => session.id === record.sessionId),
+        sessions.some(
+          (session) =>
+            session.id === record.sessionId && session.status === "closed",
+        ),
+    );
+    const classSessions = studentRecords.length;
+    const attended = studentRecords.filter(
+      (record) => record.status !== "absent",
     ).length;
     return {
       id: student.id,
@@ -311,62 +347,57 @@ router.get("/classes/:classId/students", async (req, res): Promise<void> => {
   res.json(ListClassStudentsResponse.parse(payload));
 });
 
-router.post(
-  "/classes/:classId/students",
-  async (req, res): Promise<void> => {
-    const params = CreateClassStudentParams.safeParse(req.params);
-    const input = CreateClassStudentBody.safeParse(req.body);
-    if (!params.success) {
-      res.status(400).json({ error: params.error.message });
+router.post("/classes/:classId/students", async (req, res): Promise<void> => {
+  const params = CreateClassStudentParams.safeParse(req.params);
+  const input = CreateClassStudentBody.safeParse(trimInput(req.body));
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  if (!input.success) {
+    res.status(400).json({ error: input.error.message });
+    return;
+  }
+  if (!(await ensureClassAccess(res, params.data.classId))) {
+    return;
+  }
+  const [classroom] = await db
+    .selectFrom("classrooms")
+    .where((eb) => eb("classrooms.id", "=", params.data.classId))
+    .top(1)
+    .select(["classrooms.id as id"])
+    .execute();
+  if (!classroom) {
+    res.status(404).json({ error: "Class not found" });
+    return;
+  }
+  try {
+    const [student] = await db
+      .insertInto("students")
+      .values({
+        classId: params.data.classId,
+        fullName: input.data.fullName.trim(),
+        studentCode: input.data.studentCode.trim(),
+      })
+      .outputAll("inserted")
+      .execute();
+    res.status(201).json(
+      CreateClassStudentResponse.parse({
+        id: student.id,
+        classId: student.classId,
+        fullName: student.fullName,
+        studentCode: student.studentCode,
+        attendanceRate: 100,
+      }),
+    );
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      res.status(409).json({ error: "Mã học sinh này đã tồn tại." });
       return;
     }
-    if (!input.success) {
-      res.status(400).json({ error: input.error.message });
-      return;
-    }
-    if (!(await ensureClassAccess(res, params.data.classId))) {
-      return;
-    }
-    const [classroom] = await db
-      .select({ id: classroomsTable.id })
-      .from(classroomsTable)
-      .where(eq(classroomsTable.id, params.data.classId))
-      .limit(1);
-    if (!classroom) {
-      res.status(404).json({ error: "Class not found" });
-      return;
-    }
-    try {
-      const [student] = await db
-        .insert(studentsTable)
-        .values({
-          classId: params.data.classId,
-          fullName: input.data.fullName.trim(),
-          studentCode: input.data.studentCode.trim(),
-        })
-        .returning();
-      res.status(201).json(
-        CreateClassStudentResponse.parse({
-          id: student.id,
-          classId: student.classId,
-          fullName: student.fullName,
-          studentCode: student.studentCode,
-          attendanceRate: 100,
-        }),
-      );
-    } catch (error) {
-      const code =
-        typeof error === "object" && error !== null && "code" in error
-          ? String(error.code)
-          : "";
-      if (code === "23505") {
-        res.status(409).json({ error: "Mã học sinh này đã tồn tại." });
-        return;
-      }
-      throw error;
-    }
-  },
-);
+    throw error;
+  }
+});
 
 router.get("/sessions", async (req, res): Promise<void> => {
   const query = ListAttendanceSessionsQueryParams.safeParse(req.query);
@@ -381,21 +412,26 @@ router.get("/sessions", async (req, res): Promise<void> => {
     return;
   }
   const allowedIds = await accessibleClassIds(currentSchoolUser(res));
-  if (query.data.classId === undefined && allowedIds !== null && !allowedIds.length) {
+  if (
+    query.data.classId === undefined &&
+    allowedIds !== null &&
+    !allowedIds.length
+  ) {
     res.json(ListAttendanceSessionsResponse.parse([]));
     return;
   }
   const sessions = await db
-    .select()
-    .from(attendanceSessionsTable)
-    .where(
+    .selectFrom("attendanceSessions")
+    .where((eb) =>
       query.data.classId !== undefined
-        ? eq(attendanceSessionsTable.classId, query.data.classId)
+        ? eb("attendanceSessions.classId", "=", query.data.classId)
         : allowedIds === null
-          ? undefined
-          : inArray(attendanceSessionsTable.classId, allowedIds),
+          ? eb.val(true)
+          : eb("attendanceSessions.classId", "in", allowedIds),
     )
-    .orderBy(desc(attendanceSessionsTable.startedAt));
+    .orderBy("attendanceSessions.startedAt", "desc")
+    .selectAll()
+    .execute();
   const payload = await Promise.all(
     sessions.map((session) => getSessionPayload(session.id)),
   );
@@ -412,38 +448,15 @@ router.post("/sessions", async (req, res): Promise<void> => {
     return;
   }
   const [classroom] = await db
-    .select()
-    .from(classroomsTable)
-    .where(eq(classroomsTable.id, input.data.classId));
+    .selectFrom("classrooms")
+    .where((eb) => eb("classrooms.id", "=", input.data.classId))
+    .selectAll()
+    .execute();
   if (!classroom) {
     res.status(404).json({ error: "Class not found" });
     return;
   }
-  const [existing] = await db
-    .select()
-    .from(attendanceSessionsTable)
-    .where(
-      and(
-        eq(attendanceSessionsTable.classId, input.data.classId),
-        eq(attendanceSessionsTable.status, "active"),
-      ),
-    );
-  if (existing) {
-    const payload = await getSessionPayload(existing.id);
-    res.status(201).json(CreateAttendanceSessionResponse.parse(payload));
-    return;
-  }
-  const now = new Date();
-  const [session] = await db
-    .insert(attendanceSessionsTable)
-    .values({
-      classId: input.data.classId,
-      status: "active",
-      qrToken: randomUUID(),
-      qrExpiresAt: new Date(now.getTime() + QR_TTL_MS),
-      startedAt: now,
-    })
-    .returning();
+  const session = await openSession(input.data.classId);
   const payload = await getSessionPayload(session.id);
   res.status(201).json(CreateAttendanceSessionResponse.parse(payload));
 });
@@ -474,15 +487,7 @@ router.post("/sessions/:sessionId/close", async (req, res): Promise<void> => {
   if (!(await ensureSessionAccess(res, params.data.sessionId))) {
     return;
   }
-  const [updated] = await db
-    .update(attendanceSessionsTable)
-    .set({ status: "closed", endedAt: new Date() })
-    .where(eq(attendanceSessionsTable.id, params.data.sessionId))
-    .returning();
-  if (!updated) {
-    res.status(404).json({ error: "Session not found" });
-    return;
-  }
+  const updated = await closeSession(params.data.sessionId);
   const payload = await getSessionPayload(updated.id);
   res.json(CloseAttendanceSessionResponse.parse(payload));
 });
@@ -499,24 +504,21 @@ router.get(
       return;
     }
     const records = await db
-      .select({
-        record: attendanceRecordsTable,
-        student: studentsTable,
-      })
-      .from(attendanceRecordsTable)
-      .innerJoin(
-        studentsTable,
-        eq(attendanceRecordsTable.studentId, studentsTable.id),
-      )
-      .where(
-        eq(attendanceRecordsTable.sessionId, params.data.sessionId),
-      );
-    const payload = records.map(({ record, student }) => ({
+      .selectFrom("attendanceRecords")
+      .innerJoin("students", "attendanceRecords.studentId", "students.id")
+      .selectAll("attendanceRecords")
+      .select([
+        "students.fullName as studentName",
+        "students.studentCode as studentCode",
+      ])
+      .where("attendanceRecords.sessionId", "=", params.data.sessionId)
+      .execute();
+    const payload = records.map((record) => ({
       id: record.id,
       sessionId: record.sessionId,
       studentId: record.studentId,
-      studentName: student.fullName,
-      studentCode: student.studentCode,
+      studentName: record.studentName,
+      studentCode: record.studentCode,
       status: record.status,
       checkedInAt: iso(record.checkedInAt),
       updatedAt: record.updatedAt.toISOString(),
@@ -542,9 +544,10 @@ router.post(
       return;
     }
     const [session] = await db
-      .select()
-      .from(attendanceSessionsTable)
-      .where(eq(attendanceSessionsTable.id, params.data.sessionId));
+      .selectFrom("attendanceSessions")
+      .where((eb) => eb("attendanceSessions.id", "=", params.data.sessionId))
+      .selectAll()
+      .execute();
     if (
       !session ||
       session.status !== "active" ||
@@ -555,43 +558,25 @@ router.post(
       return;
     }
     const [student] = await db
-      .select()
-      .from(studentsTable)
-      .where(
-        and(
-          eq(studentsTable.studentCode, input.data.studentCode.trim()),
-          eq(studentsTable.classId, session.classId),
-        ),
-      );
+      .selectFrom("students")
+      .where((eb) =>
+        eb.and([
+          eb("students.studentCode", "=", input.data.studentCode.trim()),
+          eb("students.classId", "=", session.classId),
+        ]),
+      )
+      .selectAll()
+      .execute();
     if (!student) {
       res.status(400).json({ error: "Student is not in this class" });
       return;
     }
-    const [existing] = await db
-      .select()
-      .from(attendanceRecordsTable)
-      .where(
-        and(
-          eq(attendanceRecordsTable.sessionId, session.id),
-          eq(attendanceRecordsTable.studentId, student.id),
-        ),
-      );
-    if (existing) {
-      res.status(400).json({ error: "Student has already checked in" });
-      return;
-    }
-    const now = new Date();
-    const [record] = await db
-      .insert(attendanceRecordsTable)
-      .values({
-        sessionId: session.id,
-        studentId: student.id,
-        status: "present",
-        checkedInAt: now,
-        updatedAt: now,
-      })
-      .returning();
-    res.status(201).json(
+    const { record, duplicate } = await recordCheckIn(
+      session.id,
+      student.id,
+      input.data.qrToken,
+    );
+    res.status(duplicate ? 409 : 201).json(
       CreateSessionCheckInResponse.parse({
         id: record.id,
         sessionId: record.sessionId,
@@ -618,10 +603,11 @@ router.patch("/attendance/:recordId", async (req, res): Promise<void> => {
     return;
   }
   const [existingRecord] = await db
-    .select()
-    .from(attendanceRecordsTable)
-    .where(eq(attendanceRecordsTable.id, params.data.recordId))
-    .limit(1);
+    .selectFrom("attendanceRecords")
+    .where((eb) => eb("attendanceRecords.id", "=", params.data.recordId))
+    .top(1)
+    .selectAll()
+    .execute();
   if (!existingRecord) {
     res.status(404).json({ error: "Attendance record not found" });
     return;
@@ -630,24 +616,28 @@ router.patch("/attendance/:recordId", async (req, res): Promise<void> => {
     return;
   }
   const [updated] = await db
-    .update(attendanceRecordsTable)
+    .updateTable("attendanceRecords")
     .set({
       status: input.data.status,
       note: input.data.note ?? null,
       checkedInAt:
-        input.data.status === "absent" ? null : new Date(),
+        input.data.status === "absent"
+          ? null
+          : (existingRecord.checkedInAt ?? new Date()),
       updatedAt: new Date(),
     })
-    .where(eq(attendanceRecordsTable.id, params.data.recordId))
-    .returning();
+    .where((eb) => eb("attendanceRecords.id", "=", params.data.recordId))
+    .outputAll("inserted")
+    .execute();
   if (!updated) {
     res.status(404).json({ error: "Attendance record not found" });
     return;
   }
   const [student] = await db
-    .select()
-    .from(studentsTable)
-    .where(eq(studentsTable.id, updated.studentId));
+    .selectFrom("students")
+    .where((eb) => eb("students.id", "=", updated.studentId))
+    .selectAll()
+    .execute();
   if (!student) {
     res.status(404).json({ error: "Student not found" });
     return;
@@ -666,55 +656,32 @@ router.patch("/attendance/:recordId", async (req, res): Promise<void> => {
   );
 });
 
-router.post(
-  "/sessions/:sessionId/counts",
-  async (req, res): Promise<void> => {
-    const params = CreateCountSnapshotParams.safeParse(req.params);
-    const input = CreateCountSnapshotBody.safeParse(req.body);
-    if (!params.success) {
-      res.status(400).json({ error: params.error.message });
-      return;
-    }
-    if (!input.success) {
-      res.status(400).json({ error: input.error.message });
-      return;
-    }
-    if (!(await ensureSessionAccess(res, params.data.sessionId))) {
-      return;
-    }
-    const [session] = await db
-      .select()
-      .from(attendanceSessionsTable)
-      .where(eq(attendanceSessionsTable.id, params.data.sessionId));
-    if (!session) {
-      res.status(404).json({ error: "Session not found" });
-      return;
-    }
-    if (session.status !== "active") {
-      res.status(400).json({ error: "Cannot save a camera count for a closed session" });
-      return;
-    }
-    const [snapshot] = await db
-      .insert(countSnapshotsTable)
-      .values({
-        sessionId: session.id,
-        estimatedCount: input.data.estimatedCount,
-        confidence: input.data.confidence,
-        source: input.data.source,
-      })
-      .returning();
-    res.status(201).json(
-      CreateCountSnapshotResponse.parse({
-        id: snapshot.id,
-        sessionId: snapshot.sessionId,
-        estimatedCount: snapshot.estimatedCount,
-        confidence: snapshot.confidence,
-        source: snapshot.source,
-        capturedAt: snapshot.capturedAt.toISOString(),
-      }),
-    );
-  },
-);
+router.post("/sessions/:sessionId/counts", async (req, res): Promise<void> => {
+  const params = CreateCountSnapshotParams.safeParse(req.params);
+  const input = CreateCountSnapshotBody.safeParse(req.body);
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  if (!input.success) {
+    res.status(400).json({ error: input.error.message });
+    return;
+  }
+  if (!(await ensureSessionAccess(res, params.data.sessionId))) {
+    return;
+  }
+  const snapshot = await saveCountSnapshot(params.data.sessionId, input.data);
+  res.status(201).json(
+    CreateCountSnapshotResponse.parse({
+      id: snapshot.id,
+      sessionId: snapshot.sessionId,
+      estimatedCount: snapshot.estimatedCount,
+      confidence: snapshot.confidence,
+      source: snapshot.source,
+      capturedAt: snapshot.capturedAt.toISOString(),
+    }),
+  );
+});
 
 router.get(
   "/sessions/:sessionId/reconciliation",
@@ -733,11 +700,12 @@ router.get(
       return;
     }
     const [latestSnapshot] = await db
-      .select()
-      .from(countSnapshotsTable)
-      .where(eq(countSnapshotsTable.sessionId, params.data.sessionId))
-      .orderBy(desc(countSnapshotsTable.capturedAt))
-      .limit(1);
+      .selectFrom("countSnapshots")
+      .where((eb) => eb("countSnapshots.sessionId", "=", params.data.sessionId))
+      .orderBy("countSnapshots.capturedAt", "desc")
+      .top(1)
+      .selectAll()
+      .execute();
     const difference = latestSnapshot
       ? latestSnapshot.estimatedCount - payload.checkedInCount
       : null;
@@ -779,7 +747,11 @@ router.get("/reports/attendance", async (req, res): Promise<void> => {
     return;
   }
   const allowedIds = await accessibleClassIds(currentSchoolUser(res));
-  if (query.data.classId === undefined && allowedIds !== null && !allowedIds.length) {
+  if (
+    query.data.classId === undefined &&
+    allowedIds !== null &&
+    !allowedIds.length
+  ) {
     res.json(
       GetAttendanceReportResponse.parse({
         overallAttendanceRate: 0,
@@ -789,7 +761,7 @@ router.get("/reports/attendance", async (req, res): Promise<void> => {
     );
     return;
   }
-  const classes = await db.select().from(classroomsTable);
+  const classes = await db.selectFrom("classrooms").selectAll().execute();
   const selectedClasses =
     query.data.classId === undefined
       ? allowedIds === null
@@ -797,9 +769,9 @@ router.get("/reports/attendance", async (req, res): Promise<void> => {
         : classes.filter((classroom) => allowedIds.includes(classroom.id))
       : classes.filter((classroom) => classroom.id === query.data.classId);
   const [students, allSessions, records] = await Promise.all([
-    db.select().from(studentsTable),
-    db.select().from(attendanceSessionsTable),
-    db.select().from(attendanceRecordsTable),
+    db.selectFrom("students").selectAll().execute(),
+    db.selectFrom("attendanceSessions").selectAll().execute(),
+    db.selectFrom("attendanceRecords").selectAll().execute(),
   ]);
   const sessions = allSessions.filter((session) => session.status === "closed");
   const rows = selectedClasses.map((classroom) => {
@@ -814,7 +786,9 @@ router.get("/reports/attendance", async (req, res): Promise<void> => {
         record.status !== "absent" &&
         classSessions.some((session) => session.id === record.sessionId),
     ).length;
-    const possible = classStudents.length * classSessions.length;
+    const possible = records.filter((record) =>
+      classSessions.some((session) => session.id === record.sessionId),
+    ).length;
     return {
       classId: classroom.id,
       className: classroom.name,
@@ -824,10 +798,17 @@ router.get("/reports/attendance", async (req, res): Promise<void> => {
       sessionsCount: classSessions.length,
     };
   });
-  const totalPossible = rows.reduce(
-    (total, row) => total + row.studentCount * row.sessionsCount,
-    0,
+  const selectedClassIds = new Set(
+    selectedClasses.map((classroom) => classroom.id),
   );
+  const closedSessionIds = new Set(
+    sessions
+      .filter((session) => selectedClassIds.has(session.classId))
+      .map((session) => session.id),
+  );
+  const totalPossible = records.filter((record) =>
+    closedSessionIds.has(record.sessionId),
+  ).length;
   const totalAttended = rows.reduce(
     (total, row) =>
       total +

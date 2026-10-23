@@ -8,18 +8,16 @@
     "./schema": "./src/schema/index.ts"
   },
   "scripts": {
-    "push": "drizzle-kit push --config ./drizzle.config.ts",
-    "push-force": "drizzle-kit push --force --config ./drizzle.config.ts"
+    "migrate": "tsx ./src/migrate.ts",
+    "push": "pnpm run migrate"
   },
   "dependencies": {
-    "drizzle-orm": "catalog:",
-    "drizzle-zod": "^0.8.3",
-    "pg": "^8.23.0",
-    "zod": "catalog:"
+    "kysely": "0.28.8",
+    "tedious": "19.2.0",
+    "tarn": "3.0.2"
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "@types/pg": "^8.23.1",
-    "drizzle-kit": "^0.31.10"
+    "tsx": "catalog:"
   }
 }

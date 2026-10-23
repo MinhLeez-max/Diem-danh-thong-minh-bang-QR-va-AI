@@ -5,6 +5,56 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+export type StudentAttendanceEntryStatus = typeof StudentAttendanceEntryStatus[keyof typeof StudentAttendanceEntryStatus];
+
+
+export const StudentAttendanceEntryStatus = {
+  present: 'present',
+  late: 'late',
+  absent: 'absent',
+} as const;
+
+export interface StudentAttendanceEntry {
+  id: number;
+  sessionId: number;
+  className: string;
+  subject: string;
+  startedAt: string;
+  status: StudentAttendanceEntryStatus;
+  /** @nullable */
+  checkedInAt: string | null;
+}
+
+export type ReadinessStatusStatus = typeof ReadinessStatusStatus[keyof typeof ReadinessStatusStatus];
+
+
+export const ReadinessStatusStatus = {
+  ok: 'ok',
+  not_ready: 'not_ready',
+} as const;
+
+export type ReadinessStatusDatabase = typeof ReadinessStatusDatabase[keyof typeof ReadinessStatusDatabase];
+
+
+export const ReadinessStatusDatabase = {
+  ok: 'ok',
+  unavailable: 'unavailable',
+} as const;
+
+export type ReadinessStatusAuthentication = typeof ReadinessStatusAuthentication[keyof typeof ReadinessStatusAuthentication];
+
+
+export const ReadinessStatusAuthentication = {
+  configured: 'configured',
+  missing: 'missing',
+} as const;
+
+export interface ReadinessStatus {
+  status: ReadinessStatusStatus;
+  database: ReadinessStatusDatabase;
+  authentication: ReadinessStatusAuthentication;
+}
+
 export interface HealthStatus {
   status: string;
 }
@@ -71,11 +121,20 @@ export interface Classroom {
 }
 
 export interface ClassInput {
-  /** @minLength 1 */
+  /**
+     * @minLength 1
+     * @maxLength 120
+     */
   name: string;
-  /** @minLength 1 */
+  /**
+     * @minLength 1
+     * @maxLength 120
+     */
   subject: string;
-  /** @minLength 1 */
+  /**
+     * @minLength 1
+     * @maxLength 120
+     */
   room: string;
 }
 
@@ -88,9 +147,15 @@ export interface Student {
 }
 
 export interface StudentInput {
-  /** @minLength 1 */
+  /**
+     * @minLength 1
+     * @maxLength 120
+     */
   fullName: string;
-  /** @minLength 1 */
+  /**
+     * @minLength 1
+     * @maxLength 64
+     */
   studentCode: string;
 }
 
@@ -160,6 +225,7 @@ export const AttendanceUpdateStatus = {
 
 export interface AttendanceUpdate {
   status: AttendanceUpdateStatus;
+  /** @maxLength 2000 */
   note?: string;
 }
 
@@ -172,7 +238,10 @@ export const CountSnapshotInputSource = {
 } as const;
 
 export interface CountSnapshotInput {
-  /** @minimum 0 */
+  /**
+     * @minimum 0
+     * @maximum 10000
+     */
   estimatedCount: number;
   /**
      * @minimum 0

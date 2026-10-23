@@ -1,26 +1,69 @@
-// Export your models here. Add one export per file
-// export * from "./posts";
-//
-// Each model/table should ideally be split into different files.
-// Each model/table should define a Drizzle table, insert schema, and types:
-//
-//   import { pgTable, text, serial } from "drizzle-orm/pg-core";
-//   import { createInsertSchema } from "drizzle-zod";
-//   import { z } from "zod/v4";
-//
-//   export const postsTable = pgTable("posts", {
-//     id: serial("id").primaryKey(),
-//     title: text("title").notNull(),
-//   });
-//
-//   export const insertPostSchema = createInsertSchema(postsTable).omit({ id: true });
-//   export type InsertPost = z.infer<typeof insertPostSchema>;
-//   export type Post = typeof postsTable.$inferSelect;
+import type { Generated, Selectable } from "kysely";
 
-export * from "./attendance-records";
-export * from "./attendance-sessions";
-export * from "./classrooms";
-export * from "./count-snapshots";
-export * from "./school-users";
-export * from "./students";
-export * from "./teacher-class-assignments";
+export interface ClassroomTable {
+  id: Generated<number>;
+  name: string;
+  subject: string;
+  room: string;
+}
+export interface StudentTable {
+  id: Generated<number>;
+  classId: number;
+  fullName: string;
+  studentCode: string;
+}
+export interface AttendanceSessionTable {
+  id: Generated<number>;
+  classId: number;
+  status: Generated<string>;
+  startedAt: Generated<Date>;
+  endedAt: Generated<Date | null>;
+  qrToken: string;
+  qrExpiresAt: Date;
+}
+export interface AttendanceRecordTable {
+  id: Generated<number>;
+  sessionId: number;
+  studentId: number;
+  status: Generated<string>;
+  checkedInAt: Generated<Date | null>;
+  note: Generated<string | null>;
+  updatedAt: Generated<Date>;
+}
+export interface CountSnapshotTable {
+  id: Generated<number>;
+  sessionId: number;
+  estimatedCount: number;
+  confidence: number;
+  source: string;
+  capturedAt: Generated<Date>;
+}
+export interface SchoolUserTable {
+  id: Generated<number>;
+  clerkUserId: string;
+  email: Generated<string>;
+  displayName: Generated<string>;
+  role: Generated<string>;
+  studentId: Generated<number | null>;
+  createdAt: Generated<Date>;
+}
+export interface TeacherClassAssignmentTable {
+  id: Generated<number>;
+  schoolUserId: number;
+  classId: number;
+  createdAt: Generated<Date>;
+}
+export interface Database {
+  classrooms: ClassroomTable;
+  students: StudentTable;
+  attendanceSessions: AttendanceSessionTable;
+  attendanceRecords: AttendanceRecordTable;
+  countSnapshots: CountSnapshotTable;
+  schoolUsers: SchoolUserTable;
+  teacherClassAssignments: TeacherClassAssignmentTable;
+}
+export type Classroom = Selectable<ClassroomTable>;
+export type Student = Selectable<StudentTable>;
+export type AttendanceSession = Selectable<AttendanceSessionTable>;
+export type AttendanceRecord = Selectable<AttendanceRecordTable>;
+export type SchoolUser = Selectable<SchoolUserTable>;

@@ -9,5 +9,6 @@ import type { AttendanceUpdateStatus } from './attendanceUpdateStatus';
 
 export interface AttendanceUpdate {
   status: AttendanceUpdateStatus;
+  /** @maxLength 2000 */
   note?: string;
 }

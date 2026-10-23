@@ -8,7 +8,10 @@
 import type { CountSnapshotInputSource } from './countSnapshotInputSource';
 
 export interface CountSnapshotInput {
-  /** @minimum 0 */
+  /**
+     * @minimum 0
+     * @maximum 10000
+     */
   estimatedCount: number;
   /**
      * @minimum 0

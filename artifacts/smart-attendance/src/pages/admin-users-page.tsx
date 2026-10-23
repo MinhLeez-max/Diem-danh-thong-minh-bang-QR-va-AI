@@ -16,17 +16,18 @@ export function AdminUsersPage() {
   const [role, setRole] = useState<SchoolUserUpdateInput['role']>('pending');
   const [classIds, setClassIds] = useState<number[]>([]);
   const [studentId, setStudentId] = useState('');
+  const [studentClassId, setStudentClassId] = useState('');
   const [saved, setSaved] = useState(false);
   const update = useUpdateSchoolUser();
   const chosenUser = (users.data ?? []).find((user) => user.id === selectedId);
-  const rosterClassId = Number(classIds[0] ?? classes.data?.[0]?.id ?? 0);
+  const rosterClassId = Number(studentClassId || 0);
   const roster = useListClassStudents(rosterClassId, { query: { enabled: !!rosterClassId, queryKey: getListClassStudentsQueryKey(rosterClassId) } });
   const pendingCount = useMemo(() => (users.data ?? []).filter((user) => user.role === 'pending').length, [users.data]);
   const openUser = (id: number) => {
     const user = users.data?.find((entry) => entry.id === id);
     if (!user) return;
     setSelectedId(id); setRole(user.role); setClassIds(user.classIds ?? []);
-    setStudentId(user.studentId ? String(user.studentId) : ''); setSaved(false);
+    setStudentId(user.studentId ? String(user.studentId) : ''); setStudentClassId(''); setSaved(false); update.reset();
   };
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -65,7 +66,7 @@ export function AdminUsersPage() {
             <form className="form-stack" onSubmit={submit} data-testid="form-assign-role">
               <label><span className="form-label">Vai trò trong trường</span><select className="select-field" value={role} onChange={(event) => setRole(event.target.value as SchoolUserUpdateInput['role'])} data-testid="select-user-role"><option value="pending">Chờ phân quyền</option><option value="admin">Quản trị viên</option><option value="teacher">Giáo viên</option><option value="student">Học sinh</option></select></label>
               {role === 'teacher' && <fieldset style={{ border: 0, padding: 0, margin: 0 }}><legend className="form-label">Lớp được phụ trách</legend>{classes.isLoading ? <div className="loading-row">Đang tải lớp…</div> : !classes.data?.length ? <div className="notice">Chưa có lớp học. Tạo lớp trước tại <Link className="text-link" href="/classes">Lớp học</Link>.</div> : <div className="class-assignment-list">{classes.data.map((classroom) => <label className="class-assignment" key={classroom.id}><input type="checkbox" checked={classIds.includes(classroom.id)} onChange={() => toggleClass(classroom.id)} /> <span><strong>{classroom.name}</strong><small>{classroom.subject} · {classroom.studentCount} học sinh</small></span></label>)}</div>}</fieldset>}
-              {role === 'student' && <div className="form-stack" style={{ marginTop: 0 }}><label><span className="form-label">Lớp của học sinh</span><select className="select-field" value={rosterClassId || ''} onChange={(event) => setClassIds(event.target.value ? [Number(event.target.value)] : [])} data-testid="select-student-class"><option value="">Chọn lớp</option>{(classes.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.name} · {c.subject}</option>)}</select></label><label><span className="form-label">Hồ sơ học sinh trong danh sách lớp</span><select className="select-field" value={studentId} onChange={(event) => setStudentId(event.target.value)} disabled={!rosterClassId || roster.isLoading} data-testid="select-linked-student"><option value="">Chưa liên kết</option>{(roster.data ?? []).map((student) => <option key={student.id} value={student.id}>{student.fullName} · {student.studentCode}</option>)}</select><span className="form-help">{roster.isError ? 'Không thể tải danh sách lớp. Hãy thử làm mới.' : 'Liên kết giúp học sinh xác nhận bằng tài khoản thay vì nhập mã.'}</span></label></div>}
+              {role === 'student' && <div className="form-stack" style={{ marginTop: 0 }}><label><span className="form-label">Lớp của học sinh</span><select className="select-field" value={rosterClassId || ''} onChange={(event) => { setStudentClassId(event.target.value); setStudentId(''); setSaved(false); update.reset(); }} data-testid="select-student-class"><option value="">Chọn lớp</option>{(classes.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.name} · {c.subject}</option>)}</select></label><label><span className="form-label">Hồ sơ học sinh trong danh sách lớp</span><select className="select-field" value={studentId} onChange={(event) => setStudentId(event.target.value)} disabled={roster.isLoading} data-testid="select-linked-student"><option value="">Chưa liên kết</option>{studentId && !(roster.data ?? []).some(student => String(student.id) === studentId) && <option value={studentId}>{chosenUser.studentName} · {chosenUser.studentCode} (đã liên kết)</option>}{(roster.data ?? []).map((student) => <option key={student.id} value={student.id}>{student.fullName} · {student.studentCode}</option>)}</select><span className="form-help">{roster.isError ? 'Không thể tải danh sách lớp. Hãy thử làm mới.' : 'Liên kết giúp học sinh xác nhận bằng tài khoản thay vì nhập mã.'}</span></label></div>}
               {role === 'pending' && <div className="notice">Tài khoản chưa thể truy cập lớp học cho đến khi được phân vai trò.</div>}
               {update.isError && <div className="error-banner" role="alert">{friendlyError(update.error)}</div>}
               {saved && <div className="success-banner" role="status"><Check size={14} style={{ verticalAlign: 'middle' }} /> Đã lưu thay đổi cho tài khoản.</div>}

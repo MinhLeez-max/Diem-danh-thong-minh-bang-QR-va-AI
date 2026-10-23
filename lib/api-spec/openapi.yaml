@@ -28,6 +28,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /readyz:
+    get:
+      operationId: readinessCheck
+      tags: [health]
+      summary: SQL Server and authentication configuration readiness
+      responses:
+        "200":
+          description: Database is reachable and authentication keys are present
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadinessStatus" }
+        "503":
+          description: Database or authentication configuration unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadinessStatus" }
   /auth/me:
     get:
       operationId: getCurrentSchoolUser
@@ -40,6 +56,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SchoolUser"
+  /student/attendance:
+    get:
+      operationId: getStudentAttendance
+      tags: [attendance]
+      summary: Get the signed-in student's latest 100 attendance records
+      responses:
+        "200":
+          description: Own attendance history, newest sessions first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StudentAttendanceEntry"
   /admin/users:
     get:
       operationId: listSchoolUsers
@@ -421,6 +451,24 @@ paths:
                 $ref: "#/components/schemas/AttendanceReport"
 components:
   schemas:
+    StudentAttendanceEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        sessionId: { type: integer }
+        className: { type: string }
+        subject: { type: string }
+        startedAt: { type: string, format: date-time }
+        status: { type: string, enum: [present, late, absent] }
+        checkedInAt: { type: [string, "null"], format: date-time }
+      required: [id, sessionId, className, subject, startedAt, status, checkedInAt]
+    ReadinessStatus:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, not_ready] }
+        database: { type: string, enum: [ok, unavailable] }
+        authentication: { type: string, enum: [configured, missing] }
+      required: [status, database, authentication]
     HealthStatus:
       type: object
       properties:
@@ -506,12 +554,15 @@ components:
         name:
           type: string
           minLength: 1
+          maxLength: 120
         subject:
           type: string
           minLength: 1
+          maxLength: 120
         room:
           type: string
           minLength: 1
+          maxLength: 120
       required: [name, subject, room]
     Student:
       type: object
@@ -533,9 +584,11 @@ components:
         fullName:
           type: string
           minLength: 1
+          maxLength: 120
         studentCode:
           type: string
           minLength: 1
+          maxLength: 64
       required: [fullName, studentCode]
     AttendanceSession:
       type: object
@@ -614,6 +667,7 @@ components:
           enum: [present, late, absent]
         note:
           type: string
+          maxLength: 2000
       required: [status]
     CountSnapshotInput:
       type: object
@@ -621,6 +675,7 @@ components:
         estimatedCount:
           type: integer
           minimum: 0
+          maximum: 10000
         confidence:
           type: number
           minimum: 0

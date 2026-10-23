@@ -7,8 +7,14 @@
  */
 
 export interface StudentInput {
-  /** @minLength 1 */
+  /**
+     * @minLength 1
+     * @maxLength 120
+     */
   fullName: string;
-  /** @minLength 1 */
+  /**
+     * @minLength 1
+     * @maxLength 64
+     */
   studentCode: string;
 }

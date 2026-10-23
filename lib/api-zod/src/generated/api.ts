@@ -18,6 +18,16 @@ export const HealthCheckResponse = zod.object({
 
 
 /**
+ * @summary SQL Server and authentication configuration readiness
+ */
+export const ReadinessCheckResponse = zod.object({
+  "status": zod.enum(['ok', 'not_ready']),
+  "database": zod.enum(['ok', 'unavailable']),
+  "authentication": zod.enum(['configured', 'missing'])
+})
+
+
+/**
  * @summary Get the signed-in school account and role
  */
 export const GetCurrentSchoolUserResponse = zod.object({
@@ -31,6 +41,21 @@ export const GetCurrentSchoolUserResponse = zod.object({
   "classIds": zod.array(zod.number().int()),
   "createdAt": zod.coerce.date()
 })
+
+
+/**
+ * @summary Get the signed-in student's latest 100 attendance records
+ */
+export const GetStudentAttendanceResponseItem = zod.object({
+  "id": zod.number().int(),
+  "sessionId": zod.number().int(),
+  "className": zod.string(),
+  "subject": zod.string(),
+  "startedAt": zod.coerce.date(),
+  "status": zod.enum(['present', 'late', 'absent']),
+  "checkedInAt": zod.coerce.date().nullable()
+})
+export const GetStudentAttendanceResponse = zod.array(GetStudentAttendanceResponseItem)
 
 
 /**
@@ -168,15 +193,18 @@ export const ListClassesResponse = zod.array(ListClassesResponseItem)
 /**
  * @summary Create a class
  */
+export const createClassBodyNameMax = 120;
 
+export const createClassBodySubjectMax = 120;
 
+export const createClassBodyRoomMax = 120;
 
 
 
 export const CreateClassBody = zod.object({
-  "name": zod.string().min(1),
-  "subject": zod.string().min(1),
-  "room": zod.string().min(1)
+  "name": zod.string().min(1).max(createClassBodyNameMax),
+  "subject": zod.string().min(1).max(createClassBodySubjectMax),
+  "room": zod.string().min(1).max(createClassBodyRoomMax)
 })
 
 export const CreateClassResponse = zod.object({
@@ -212,13 +240,15 @@ export const CreateClassStudentParams = zod.object({
   "classId": zod.coerce.number().int()
 })
 
+export const createClassStudentBodyFullNameMax = 120;
 
+export const createClassStudentBodyStudentCodeMax = 64;
 
 
 
 export const CreateClassStudentBody = zod.object({
-  "fullName": zod.string().min(1),
-  "studentCode": zod.string().min(1)
+  "fullName": zod.string().min(1).max(createClassStudentBodyFullNameMax),
+  "studentCode": zod.string().min(1).max(createClassStudentBodyStudentCodeMax)
 })
 
 export const CreateClassStudentResponse = zod.object({
@@ -374,9 +404,13 @@ export const UpdateAttendanceRecordParams = zod.object({
   "recordId": zod.coerce.number().int()
 })
 
+export const updateAttendanceRecordBodyNoteMax = 2000;
+
+
+
 export const UpdateAttendanceRecordBody = zod.object({
   "status": zod.enum(['present', 'late', 'absent']),
-  "note": zod.string().optional()
+  "note": zod.string().max(updateAttendanceRecordBodyNoteMax).optional()
 })
 
 export const UpdateAttendanceRecordResponse = zod.object({
@@ -400,6 +434,7 @@ export const CreateCountSnapshotParams = zod.object({
 })
 
 export const createCountSnapshotBodyEstimatedCountMin = 0;
+export const createCountSnapshotBodyEstimatedCountMax = 10000;
 
 export const createCountSnapshotBodyConfidenceMin = 0;
 export const createCountSnapshotBodyConfidenceMax = 1;
@@ -407,7 +442,7 @@ export const createCountSnapshotBodyConfidenceMax = 1;
 
 
 export const CreateCountSnapshotBody = zod.object({
-  "estimatedCount": zod.number().int().min(createCountSnapshotBodyEstimatedCountMin),
+  "estimatedCount": zod.number().int().min(createCountSnapshotBodyEstimatedCountMin).max(createCountSnapshotBodyEstimatedCountMax),
   "confidence": zod.number().min(createCountSnapshotBodyConfidenceMin).max(createCountSnapshotBodyConfidenceMax),
   "source": zod.enum(['camera', 'demo'])
 })

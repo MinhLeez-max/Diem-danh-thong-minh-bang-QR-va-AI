@@ -1,13 +1,8 @@
 import { getAuth } from "@clerk/express";
-import { and, count, eq, sql } from "drizzle-orm";
 import type { RequestHandler, Response } from "express";
-import {
-  db,
-  schoolUsersTable,
-  teacherClassAssignmentsTable,
-} from "@workspace/db";
+import { db, lockResource, type SchoolUser } from "@workspace/db";
 
-export type SchoolUserRecord = typeof schoolUsersTable.$inferSelect;
+export type SchoolUserRecord = SchoolUser;
 export type SchoolRole = "admin" | "teacher" | "student" | "pending";
 
 export function currentSchoolUser(res: Response): SchoolUserRecord {
@@ -19,6 +14,62 @@ function claimString(claims: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
+export async function resolveSchoolUser(
+  userId: string,
+  claims: Record<string, unknown> = {},
+): Promise<SchoolUser> {
+  let [schoolUser] = await db
+    .selectFrom("schoolUsers")
+    .where((eb) => eb("schoolUsers.clerkUserId", "=", userId))
+    .top(1)
+    .selectAll()
+    .execute();
+
+  if (!schoolUser) {
+    const name =
+      claimString(claims, "name") ||
+      [claimString(claims, "firstName"), claimString(claims, "lastName")]
+        .filter(Boolean)
+        .join(" ") ||
+      "Tài khoản mới";
+    const email = claimString(claims, "email");
+
+    schoolUser = await db.transaction().execute(async (tx) => {
+      // Serialize first-account creation so simultaneous first sign-ins cannot
+      // both claim the bootstrap administrator role.
+      await lockResource(tx, "school-user-bootstrap");
+      const [existing] = await tx
+        .selectFrom("schoolUsers")
+        .where((eb) => eb("schoolUsers.clerkUserId", "=", userId))
+        .top(1)
+        .selectAll()
+        .execute();
+      if (existing) {
+        return existing;
+      }
+
+      const [userCount] = await tx
+        .selectFrom("schoolUsers")
+        .select((eb) => [eb.fn.countAll<number>().as("value")])
+        .execute();
+      const role = Number(userCount?.value ?? 0) === 0 ? "admin" : "pending";
+      const [created] = await tx
+        .insertInto("schoolUsers")
+        .values({
+          clerkUserId: userId,
+          email,
+          displayName: name,
+          role,
+        })
+        .outputAll("inserted")
+        .execute();
+      return created;
+    });
+  }
+
+  return schoolUser;
+}
+
 export const requireSchoolUser: RequestHandler = async (req, res, next) => {
   const auth = getAuth(req);
   if (!auth.userId) {
@@ -27,54 +78,10 @@ export const requireSchoolUser: RequestHandler = async (req, res, next) => {
   }
 
   try {
-    let [schoolUser] = await db
-      .select()
-      .from(schoolUsersTable)
-      .where(eq(schoolUsersTable.clerkUserId, auth.userId))
-      .limit(1);
-
-    if (!schoolUser) {
-      const claims = (auth.sessionClaims ?? {}) as Record<string, unknown>;
-      const name =
-        claimString(claims, "name") ||
-        [
-          claimString(claims, "firstName"),
-          claimString(claims, "lastName"),
-        ]
-          .filter(Boolean)
-          .join(" ") ||
-        "Tài khoản mới";
-      const email = claimString(claims, "email");
-
-      schoolUser = await db.transaction(async (tx) => {
-        // Serialize first-account creation so simultaneous first sign-ins cannot
-        // both claim the bootstrap administrator role.
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(78231581)`);
-        const [existing] = await tx
-          .select()
-          .from(schoolUsersTable)
-          .where(eq(schoolUsersTable.clerkUserId, auth.userId!))
-          .limit(1);
-        if (existing) {
-          return existing;
-        }
-
-        const [userCount] = await tx
-          .select({ value: count() })
-          .from(schoolUsersTable);
-        const role = Number(userCount?.value ?? 0) === 0 ? "admin" : "pending";
-        const [created] = await tx
-          .insert(schoolUsersTable)
-          .values({
-            clerkUserId: auth.userId!,
-            email,
-            displayName: name,
-            role,
-          })
-          .returning();
-        return created;
-      });
-    }
+    const schoolUser = await resolveSchoolUser(
+      auth.userId,
+      (auth.sessionClaims ?? {}) as Record<string, unknown>,
+    );
 
     res.locals.schoolUser = schoolUser;
     next();
@@ -109,9 +116,10 @@ export async function accessibleClassIds(
     return [];
   }
   const assignments = await db
-    .select({ classId: teacherClassAssignmentsTable.classId })
-    .from(teacherClassAssignmentsTable)
-    .where(eq(teacherClassAssignmentsTable.schoolUserId, user.id));
+    .selectFrom("teacherClassAssignments")
+    .where((eb) => eb("teacherClassAssignments.schoolUserId", "=", user.id))
+    .select(["teacherClassAssignments.classId as classId"])
+    .execute();
   return assignments.map((assignment) => assignment.classId);
 }
 
@@ -128,15 +136,16 @@ export async function ensureClassAccess(
     return false;
   }
   const [assignment] = await db
-    .select({ id: teacherClassAssignmentsTable.id })
-    .from(teacherClassAssignmentsTable)
-    .where(
-      and(
-        eq(teacherClassAssignmentsTable.schoolUserId, user.id),
-        eq(teacherClassAssignmentsTable.classId, classId),
-      ),
+    .selectFrom("teacherClassAssignments")
+    .where((eb) =>
+      eb.and([
+        eb("teacherClassAssignments.schoolUserId", "=", user.id),
+        eb("teacherClassAssignments.classId", "=", classId),
+      ]),
     )
-    .limit(1);
+    .top(1)
+    .select(["teacherClassAssignments.id as id"])
+    .execute();
   if (!assignment) {
     res.status(403).json({ error: "Lớp này chưa được phân công cho bạn." });
     return false;

@@ -1,4 +1,3 @@
-import { and, count, desc, eq, inArray, ne } from "drizzle-orm";
 import { Router, type IRouter } from "express";
 import {
   GetCurrentSchoolUserResponse,
@@ -7,13 +6,8 @@ import {
   UpdateSchoolUserParams,
   UpdateSchoolUserResponse,
 } from "@workspace/api-zod";
-import {
-  classroomsTable,
-  db,
-  schoolUsersTable,
-  studentsTable,
-  teacherClassAssignmentsTable,
-} from "@workspace/db";
+import { db, lockResource } from "@workspace/db";
+import { HttpError } from "../lib/http-error";
 import {
   currentSchoolUser,
   requireRole,
@@ -25,15 +19,17 @@ const router: IRouter = Router();
 async function schoolUserPayload(user: SchoolUserRecord) {
   const [student] = user.studentId
     ? await db
-        .select()
-        .from(studentsTable)
-        .where(eq(studentsTable.id, user.studentId))
-        .limit(1)
+        .selectFrom("students")
+        .where((eb) => eb("students.id", "=", user.studentId))
+        .top(1)
+        .selectAll()
+        .execute()
     : [];
   const assignments = await db
-    .select({ classId: teacherClassAssignmentsTable.classId })
-    .from(teacherClassAssignmentsTable)
-    .where(eq(teacherClassAssignmentsTable.schoolUserId, user.id));
+    .selectFrom("teacherClassAssignments")
+    .where((eb) => eb("teacherClassAssignments.schoolUserId", "=", user.id))
+    .select(["teacherClassAssignments.classId as classId"])
+    .execute();
   return {
     id: user.id,
     email: user.email,
@@ -60,9 +56,10 @@ router.get(
   requireRole("admin"),
   async (_req, res): Promise<void> => {
     const users = await db
-      .select()
-      .from(schoolUsersTable)
-      .orderBy(desc(schoolUsersTable.createdAt));
+      .selectFrom("schoolUsers")
+      .orderBy("schoolUsers.createdAt", "desc")
+      .selectAll()
+      .execute();
     const payload = await Promise.all(users.map(schoolUserPayload));
     res.json(ListSchoolUsersResponse.parse(payload));
   },
@@ -84,10 +81,11 @@ router.patch(
     }
 
     const [target] = await db
-      .select()
-      .from(schoolUsersTable)
-      .where(eq(schoolUsersTable.id, params.data.userId))
-      .limit(1);
+      .selectFrom("schoolUsers")
+      .where((eb) => eb("schoolUsers.id", "=", params.data.userId))
+      .top(1)
+      .selectAll()
+      .execute();
     if (!target) {
       res.status(404).json({ error: "Không tìm thấy tài khoản." });
       return;
@@ -117,24 +115,26 @@ router.patch(
 
     if (input.data.role === "student" && input.data.studentId !== null) {
       const [student] = await db
-        .select({ id: studentsTable.id })
-        .from(studentsTable)
-        .where(eq(studentsTable.id, input.data.studentId))
-        .limit(1);
+        .selectFrom("students")
+        .where((eb) => eb("students.id", "=", input.data.studentId))
+        .top(1)
+        .select(["students.id as id"])
+        .execute();
       if (!student) {
         res.status(404).json({ error: "Không tìm thấy hồ sơ học sinh." });
         return;
       }
       const [otherAccount] = await db
-        .select({ id: schoolUsersTable.id })
-        .from(schoolUsersTable)
-        .where(
-          and(
-            eq(schoolUsersTable.studentId, input.data.studentId),
-            ne(schoolUsersTable.id, target.id),
-          ),
+        .selectFrom("schoolUsers")
+        .where((eb) =>
+          eb.and([
+            eb("schoolUsers.studentId", "=", input.data.studentId),
+            eb("schoolUsers.id", "!=", target.id),
+          ]),
         )
-        .limit(1);
+        .top(1)
+        .select(["schoolUsers.id as id"])
+        .execute();
       if (otherAccount) {
         res.status(409).json({
           error: "Hồ sơ học sinh đã được liên kết với tài khoản khác.",
@@ -145,54 +145,78 @@ router.patch(
 
     if (classIds.length > 0) {
       const existingClasses = await db
-        .select({ id: classroomsTable.id })
-        .from(classroomsTable)
-        .where(inArray(classroomsTable.id, classIds));
+        .selectFrom("classrooms")
+        .where((eb) => eb("classrooms.id", "in", classIds))
+        .select(["classrooms.id as id"])
+        .execute();
       if (existingClasses.length !== classIds.length) {
         res.status(404).json({ error: "Một hoặc nhiều lớp không tồn tại." });
         return;
       }
     }
 
-    if (target.role === "admin" && input.data.role !== "admin") {
-      const [adminCount] = await db
-        .select({ value: count() })
-        .from(schoolUsersTable)
-        .where(eq(schoolUsersTable.role, "admin"));
-      if (Number(adminCount?.value ?? 0) <= 1) {
-        res.status(409).json({
-          error: "Không thể hạ quyền quản trị viên cuối cùng của trường.",
-        });
-        return;
+    const updated = await db.transaction().execute(async (tx) => {
+      // Recheck authorization and the last-admin invariant under a shared lock.
+      // Concurrent demotions must never leave the school without an admin.
+      await lockResource(tx, "school-user-bootstrap");
+      const caller = await tx
+        .selectFrom("schoolUsers")
+        .selectAll()
+        .where("id", "=", currentSchoolUser(res).id)
+        .executeTakeFirst();
+      if (caller?.role !== "admin")
+        throw new HttpError(
+          403,
+          "Quyền quản trị đã thay đổi. Vui lòng tải lại.",
+        );
+      const latestTarget = await tx
+        .selectFrom("schoolUsers")
+        .selectAll()
+        .where("id", "=", target.id)
+        .executeTakeFirst();
+      if (!latestTarget) throw new HttpError(404, "Không tìm thấy tài khoản.");
+      if (latestTarget.role === "admin" && input.data.role !== "admin") {
+        const admins = await tx
+          .selectFrom("schoolUsers")
+          .select((eb) => eb.fn.countAll<number>().as("value"))
+          .where("role", "=", "admin")
+          .executeTakeFirstOrThrow();
+        if (Number(admins.value) <= 1)
+          throw new HttpError(
+            409,
+            "Không thể hạ quyền quản trị viên cuối cùng của trường.",
+          );
       }
-    }
-
-    const updated = await db.transaction(async (tx) => {
       const [saved] = await tx
-        .update(schoolUsersTable)
+        .updateTable("schoolUsers")
         .set({
           role: input.data.role,
           studentId: input.data.studentId,
         })
-        .where(eq(schoolUsersTable.id, target.id))
-        .returning();
+        .where((eb) => eb("schoolUsers.id", "=", target.id))
+        .outputAll("inserted")
+        .execute();
       await tx
-        .delete(teacherClassAssignmentsTable)
-        .where(eq(teacherClassAssignmentsTable.schoolUserId, target.id));
+        .deleteFrom("teacherClassAssignments")
+        .where((eb) =>
+          eb("teacherClassAssignments.schoolUserId", "=", target.id),
+        )
+        .execute();
       if (input.data.role === "teacher" && classIds.length > 0) {
-        await tx.insert(teacherClassAssignmentsTable).values(
-          classIds.map((classId) => ({
-            schoolUserId: target.id,
-            classId,
-          })),
-        );
+        await tx
+          .insertInto("teacherClassAssignments")
+          .values(
+            classIds.map((classId) => ({
+              schoolUserId: target.id,
+              classId,
+            })),
+          )
+          .execute();
       }
       return saved;
     });
 
-    res.json(
-      UpdateSchoolUserResponse.parse(await schoolUserPayload(updated)),
-    );
+    res.json(UpdateSchoolUserResponse.parse(await schoolUserPayload(updated)));
   },
 );
 

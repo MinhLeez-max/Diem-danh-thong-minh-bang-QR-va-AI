@@ -1,45 +1,18 @@
-# [Project name]
+# Điểm danh thông minh bằng QR và AI
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+See README.md for SQL Server setup, Clerk configuration, SSMS and validation.
 
-## Run & Operate
+- Runtime: Node.js 24, pnpm 10.32.1, TypeScript, React/Vite and Express.
+- Database: SQL Server 2022, Kysely + Tedious. PostgreSQL and DATABASE_URL are no longer used.
+- Start development SQL Server: `node scripts/dev-db.mjs up`.
+- Apply versioned SQL migrations: `pnpm --filter @workspace/db run migrate`.
+- API: `PORT=5000 pnpm --filter @workspace/api-server run dev`.
+- Frontend: `PORT=5173 BASE_PATH=/ pnpm --filter @workspace/smart-attendance run dev`.
+- Typecheck/build: `PORT=5173 BASE_PATH=/ pnpm run build`.
+- API integration tests: `pnpm --filter @workspace/api-server test` (requires SQL Server credentials and create/drop database permissions).
+- CSV tests: `pnpm --filter @workspace/smart-attendance test`.
+- Codegen: `pnpm --filter @workspace/api-spec run codegen`.
+- DB environment: DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, optional DB_TRUST_SERVER_CERTIFICATE.
+- Auth environment: CLERK_SECRET_KEY, CLERK_PUBLISHABLE_KEY, VITE_CLERK_PUBLISHABLE_KEY.
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
-
-## Stack
-
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
-
-## Where things live
-
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
-
-## Architecture decisions
-
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
-
-## Product
-
-_Describe the high-level user-facing capabilities of this app once they exist._
-
-## User preferences
-
-_Populate as you build — explicit user instructions worth remembering across sessions._
-
-## Gotchas
-
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+Retain school role boundaries and account-linked QR attendance. Camera analysis is aggregate headcount only; never identify faces or store frames.
