@@ -19,3 +19,12 @@ Chưa xác minh được:
 - Tải đầy đủ mô hình và suy luận từ camera: proxy chặn `storage.googleapis.com` trong lượt kiểm tra. Miền này đã được thêm vào bản nháp cấu hình mạng; cần lưu cấu hình và kiểm tra lại. Chưa đo độ chính xác đếm người trên camera thật.
 - Kết nối SSMS từ máy Windows của người dùng: cloud SQL Server chỉ bind loopback. README giải thích kết nối khi chạy Docker trên máy Windows hoặc qua kết nối riêng phù hợp.
 - Publish/khôi phục cloud task mới: cấu hình mới đã lưu dưới dạng draft; chưa publish hoặc kiểm tra trong task mới.
+
+
+## Bổ sung kiểm thử lỗi 401 khi đăng nhập
+
+- Thêm nạp `.env` gốc/`.env.local` và cấu hình SQL Server phát triển; thử độ ưu tiên và bí danh publishable key: 1 test đạt.
+- Client gửi token Clerk hiện tại, lấy token mới khi phiên thay đổi và không giữ token sau đăng xuất: 1 test đạt.
+- Clerk middleware thật xác minh JWT bằng cặp RSA tạm của bộ test, gọi `/api/auth/me` và tạo hồ sơ trên SQL Server: HTTP 200 với token hợp lệ; HTTP 401 với token thiếu, hết hạn hoặc bị sửa. Cặp khóa/issuer test không được ứng dụng thật tin cậy.
+- Tổng bộ kiểm thử hiện tại: 12 API/SQL Server, 3 client/CSV, 1 cấu hình; tất cả đạt. TypeScript/build đạt.
+- `pnpm db:migrate` và `pnpm dev` đã chạy với SQL Server; readiness báo `database=ok`, `authentication=missing` vì secret Clerk thật chưa được nhập. Chưa kiểm thử đăng nhập thực tế với tài khoản của người dùng.

@@ -469,3 +469,37 @@ test('concurrent admin demotions retain at least one administrator', async () =>
   const admins = await db.selectFrom('schoolUsers').selectAll().where('role', '=', 'admin').execute();
   assert.equal(admins.length, 1);
 });
+
+test('Clerk verifies signed bearer sessions for /api/auth/me; missing, expired and tampered tokens stay unauthorized', async () => {
+  const { generateKeyPairSync, createSign } = await import('node:crypto');
+  const { clerkMiddleware } = await import('@clerk/express');
+  const { requireSchoolUser } = await import('../src/middlewares/schoolAuth');
+  const keys = generateKeyPairSync('rsa', { modulusLength: 2048, publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
+  // Ephemeral test-only issuer and signing key: never accepted by the real app.
+  const issuer = 'local-clerk-test.clerk.accounts.dev';
+  const publishableKey = 'pk_test_' + Buffer.from(issuer + '$').toString('base64');
+  function token(expiry: number) {
+    const now = Math.floor(Date.now() / 1000);
+    const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid: 'local-test' })).toString('base64url');
+    const claims = Buffer.from(JSON.stringify({ iss: `https://${issuer}`, sub: 'user_bearer_integration', sid: 'sess_bearer_integration', azp: 'http://localhost:5173', iat: now - 120, nbf: now - 120, exp: expiry, v: 2, sts: 'active', fva: [0, -1] })).toString('base64url');
+    const payload = `${header}.${claims}`;
+    return payload + '.' + createSign('RSA-SHA256').update(payload).sign(keys.privateKey, 'base64url');
+  }
+  const app = express();
+  app.use(clerkMiddleware({ publishableKey, secretKey: 'sk_test_local_fixture_only', jwtKey: keys.publicKey, authorizedParties: ['http://localhost:5173'] }));
+  app.use('/api', requireSchoolUser, authRouter);
+  app.use(handleError);
+  const runtime = await listen(app);
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const valid = token(now + 60);
+    const response = await fetch(runtime.url + '/api/auth/me', { headers: { authorization: `Bearer ${valid}` } });
+    assert.equal(response.status, 200);
+    const profile = await response.json(); assert.equal(profile.role, 'pending'); assert(profile.id > 0);
+    const stored = await db.selectFrom('schoolUsers').selectAll().where('clerkUserId', '=', 'user_bearer_integration').executeTakeFirstOrThrow();
+    assert.equal(profile.id, stored.id);
+    assert.equal((await fetch(runtime.url + '/api/auth/me')).status, 401);
+    assert.equal((await fetch(runtime.url + '/api/auth/me', { headers: { authorization: `Bearer ${token(now - 60)}` } })).status, 401);
+    assert.equal((await fetch(runtime.url + '/api/auth/me', { headers: { authorization: `Bearer ${valid.slice(0, -8)}invalid!` } })).status, 401);
+  } finally { await new Promise<void>((resolve, reject) => runtime.instance.close(error => error ? reject(error) : resolve())); }
+});

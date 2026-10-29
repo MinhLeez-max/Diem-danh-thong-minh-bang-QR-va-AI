@@ -4,6 +4,34 @@
 
 Dữ liệu sử dụng **Microsoft SQL Server 2022**, Kysely và driver Tedious. SSMS là công cụ quản trị trên Windows; có thể xem/chỉnh dữ liệu SQL Server bằng SSMS. Không còn dùng PostgreSQL hoặc `DATABASE_URL`.
 
+## Chạy nhanh trong VS Code (Windows/macOS/Linux)
+
+Cài Node.js 24, pnpm 10.32.1 và mở Docker Desktop (Linux containers). Terminal PowerShell cũng dùng được; không cần lệnh `export` hay `source` với luồng chạy dưới đây.
+
+```bash
+pnpm install --frozen-lockfile
+pnpm db:up
+```
+
+Tạo `.env` tại **thư mục gốc repository** (cùng cấp `package.json`), điền khóa đầy đủ từ cùng một Clerk instance:
+
+```dotenv
+CLERK_SECRET_KEY=your_full_secret_key
+VITE_CLERK_PUBLISHABLE_KEY=your_publishable_key
+```
+
+Không dùng khóa rút gọn chứa `…` hoặc `...`. Khóa public còn được backend tự sử dụng làm `CLERK_PUBLISHABLE_KEY`. Nếu bạn đã đặt tên `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, bộ nạp cấu hình cũng hỗ trợ tên này; đây là bí danh tương thích, giao diện vẫn dùng Vite. Không đặt secret trong biến có tiền tố `VITE_` hoặc `NEXT_PUBLIC_`.
+
+```bash
+pnpm db:migrate
+pnpm doctor
+pnpm dev
+```
+
+Mở `http://localhost:5173`. Lệnh `pnpm dev` khởi động API cổng 5000 và Vite cổng 5173, tự nạp cấu hình. Các biến DB từ `.local/cloud/sqlserver.env` được nạp mặc định; `.env`, `.env.local`, rồi biến môi trường đã có có ưu tiên cao hơn. Nếu dùng SQL Server có sẵn, đặt `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` trong `.env`.
+
+Nếu đăng nhập xong nhưng `/api/auth/me` trả 401: cập nhật code mới, kiểm tra `pnpm doctor`, dùng cùng hostname `localhost` cho giao diện, khởi động lại `pnpm dev`, rồi đăng xuất/đăng nhập lại. Client gửi session token lấy trực tiếp từ Clerk; API vẫn kiểm tra chữ ký và hạn sử dụng. Trong Network, xác nhận request có header Authorization nhưng **không chia sẻ nội dung token/cookie/secret**. HTTP 401 là phiên đăng nhập chưa được xác thực; lỗi kết nối SQL Server được báo riêng, không sửa bằng cách bỏ qua xác thực. Secret key và publishable key phải thuộc cùng một instance trong Clerk Dashboard.
+
 ## Cài đặt
 
 Cần Node.js 24, pnpm 10.32.1 và Docker chạy Linux container x64 (SQL Server Developer chỉ dùng cho phát triển/kiểm thử).

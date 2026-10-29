@@ -1,11 +1,17 @@
 import path from 'path';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 
 import runtimeErrorOverlay from '@replit/vite-plugin-runtime-error-modal';
 
-const rawPort = process.env.PORT;
+const envDirectory = path.resolve(import.meta.dirname, '../..');
+const fileEnv = loadEnv(process.env.NODE_ENV === 'production' ? 'production' : 'development', envDirectory, '');
+const publicKey = process.env.VITE_CLERK_PUBLISHABLE_KEY || fileEnv.VITE_CLERK_PUBLISHABLE_KEY
+  || process.env.CLERK_PUBLISHABLE_KEY || fileEnv.CLERK_PUBLISHABLE_KEY
+  || process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || fileEnv.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || '';
+
+const rawPort = process.env.PORT || '5173';
 
 if (!rawPort) {
   throw new Error(
@@ -19,7 +25,7 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-const basePath = process.env.BASE_PATH;
+const basePath = process.env.BASE_PATH || '/';
 
 if (!basePath) {
   throw new Error(
@@ -29,6 +35,8 @@ if (!basePath) {
 
 export default defineConfig({
   base: basePath,
+  envDir: envDirectory,
+  define: { 'import.meta.env.VITE_CLERK_PUBLISHABLE_KEY': JSON.stringify(publicKey) },
   plugins: [
     react(),
     tailwindcss({ optimize: false }),
@@ -65,7 +73,7 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    proxy: { "/api": { target: "http://127.0.0.1:5000", changeOrigin: true } },
+    proxy: { "/api": { target: `http://127.0.0.1:${process.env.API_PORT || fileEnv.API_PORT || "5000"}`, changeOrigin: true } },
     port,
     strictPort: true,
     host: '0.0.0.0',
