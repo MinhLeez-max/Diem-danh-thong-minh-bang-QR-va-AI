@@ -72,6 +72,14 @@ export async function resolveSchoolUser(
 
 export const requireSchoolUser: RequestHandler = async (req, res, next) => {
   const auth = getAuth(req);
+  req.log.info(
+  {
+    clerkAuthenticated: Boolean(auth.userId),
+    authStatus: req.headers["x-clerk-auth-status"] ?? null,
+    requestHost: req.headers.host,
+  },
+  "Clerk authentication diagnostic"
+);
   if (!auth.userId) {
     res.status(401).json({ error: "Vui lòng đăng nhập để tiếp tục." });
     return;

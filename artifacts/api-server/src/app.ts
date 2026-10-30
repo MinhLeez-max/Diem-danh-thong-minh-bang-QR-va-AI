@@ -50,11 +50,18 @@ app.use("/api", (_req, res, next) => {
   }
   next();
 });
+
 app.use(
-  clerkMiddleware((req) => ({
+  clerkMiddleware({
     publishableKey: process.env.CLERK_PUBLISHABLE_KEY,
-  })),
+    authorizedParties: [
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+    ],
+    debug: process.env.NODE_ENV === "development",
+  }),
 );
+
 
 app.use("/api", router);
 

@@ -1,4 +1,5 @@
-import { type ReactNode, useEffect, useLayoutEffect, useRef } from 'react';
+import ClerkApiTokenBridge from "./components/ClerkApiTokenBridge";
+import { type ReactNode, useEffect, useRef } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { ClerkProvider, SignIn, SignUp, useAuth, useClerk } from '@clerk/react';
 import { shadcn } from '@clerk/themes';
@@ -9,7 +10,7 @@ import { AppShell } from '@/components/app-shell';
 import { CheckInPage, ClassesPage, DashboardPage, ReportsPage, SessionPage } from '@/pages/workspace-pages';
 import { AdminUsersPage } from '@/pages/admin-users-page';
 import { Route, Switch, useLocation, Router as WouterRouter, Redirect, Link } from 'wouter';
-import { getGetCurrentSchoolUserQueryKey, useGetCurrentSchoolUser, useGetStudentAttendance, getGetStudentAttendanceQueryKey, setAuthTokenGetter } from '@workspace/api-client-react';
+import { getGetCurrentSchoolUserQueryKey, useGetCurrentSchoolUser, useGetStudentAttendance, getGetStudentAttendanceQueryKey } from '@workspace/api-client-react';
 import { BookOpenCheck, ClipboardCheck, GraduationCap, ShieldCheck } from 'lucide-react';
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, staleTime: 15_000, refetchOnWindowFocus: true } } });
@@ -37,16 +38,6 @@ const clerkAppearance = {
 function RoutedErrorBoundary({ children }: { children: ReactNode }) {
   const [location] = useLocation();
   return <ErrorBoundary resetKey={location}>{children}</ErrorBoundary>;
-}
-
-function ClerkApiSessionBridge({ children }: { children: ReactNode }) {
-  const { getToken, isLoaded } = useAuth();
-  useLayoutEffect(() => {
-    setAuthTokenGetter(() => getToken());
-    return () => setAuthTokenGetter(null);
-  }, [getToken]);
-  if (!isLoaded) return <main className="page-wrap"><div className="loading-row">Đang khởi tạo đăng nhập…</div></main>;
-  return <>{children}</>;
 }
 
 function ClerkQueryClientCacheInvalidator() {
@@ -173,9 +164,9 @@ function RootRouter() {
   return <ClerkProvider publishableKey={clerkPubKey} proxyUrl={clerkProxyUrl} appearance={clerkAppearance} signInUrl={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`}
     localization={{ signIn: { start: { title: 'Chào mừng trở lại', subtitle: 'Đăng nhập vào tài khoản trường học' } }, signUp: { start: { title: 'Tạo tài khoản trường học', subtitle: 'Bắt đầu sử dụng sổ lớp thông minh' } } }}
     routerPush={(to) => setLocation(stripBase(to))} routerReplace={(to) => setLocation(stripBase(to), { replace: true })}>
-    <ClerkApiSessionBridge>
-    <ClerkQueryClientCacheInvalidator />
-    <RoutedErrorBoundary><Switch>
+    <ClerkApiTokenBridge>
+      <ClerkQueryClientCacheInvalidator />
+      <RoutedErrorBoundary><Switch>
       <Route path="/" component={HomePage} />
       <Route path="/sign-in/*?" component={() => <AuthPages />} />
       <Route path="/sign-up/*?" component={() => <AuthPages signUp />} />
@@ -187,8 +178,8 @@ function RootRouter() {
       <Route path="/sessions/:sessionId" component={() => <StaffPage><SessionPage /></StaffPage>} />
       <Route path="/reports" component={() => <StaffPage><ReportsPage /></StaffPage>} />
       <Route component={NotFound} />
-    </Switch></RoutedErrorBoundary>
-    </ClerkApiSessionBridge>
+      </Switch></RoutedErrorBoundary>
+    </ClerkApiTokenBridge>
   </ClerkProvider>;
 }
 
